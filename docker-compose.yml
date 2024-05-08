@@ -1,0 +1,10 @@
+version: '3'
+services:
+  uploader:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    volumes:
+    - ./uploads:/uploads
+    ports:
+      - 5050:3000
