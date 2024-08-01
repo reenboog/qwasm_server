@@ -1,11 +1,14 @@
+use std::{net::SocketAddr, path::PathBuf};
+
 use axum::{
 	body::Body,
-	extract::{BodyStream, Path},
-	http::{Response as HttpResponse, StatusCode},
+	extract::{Path, Request},
+	http::{HeaderValue, Response as HttpResponse, StatusCode},
 	response::{IntoResponse, Response},
 	routing::{head, post},
 	Router,
 };
+use axum_server::tls_rustls::RustlsConfig;
 use futures_util::StreamExt;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
@@ -15,6 +18,7 @@ use tokio::io::AsyncWriteExt;
 enum FileError {
 	IOError(std::io::Error),
 	ReadError(hyper::Error),
+	Unauthorised,
 }
 
 impl From<std::io::Error> for FileError {
@@ -36,6 +40,7 @@ impl IntoResponse for FileError {
 		match self {
 			FileError::IOError(e) => println!("io error: {:?}", e),
 			FileError::ReadError(e) => println!("read error: {:?}", e),
+			_ => { println!("unauthorised"); return StatusCode::FORBIDDEN.into_response(); },
 		}
 		StatusCode::NOT_ACCEPTABLE.into_response()
 	}
@@ -43,7 +48,8 @@ impl IntoResponse for FileError {
 
 async fn append_data(
 	Path(file_id): Path<String>,
-	mut stream: BodyStream,
+	// mut stream: BodyStream,
+	request: Request,
 ) -> Result<StatusCode, FileError> {
 	let path = format!("./uploads/{}", file_id);
 
@@ -55,14 +61,23 @@ async fn append_data(
 		.open(path)
 		.await?;
 
-	while let Some(chunk) = stream.next().await {
-		let data = chunk.unwrap(); // FIXME: handle errors properlyc
-		println!("{}: chunk size - {}", file_id, data.len());
+	if request.headers().get("x-uploader-auth").eq(&Some(&HeaderValue::from_bytes(b"aabb1122").unwrap())) {
+		let mut stream = request.into_body().into_data_stream();
 
-		file.write_all(&data).await?;
+		println!("auth passed, working...");
+
+		while let Some(chunk) = stream.next().await {
+			let data = chunk.unwrap(); // FIXME: handle errors properlyc
+			println!("{}: chunk size - {}", file_id, data.len());
+
+			file.write_all(&data).await?;
+		}
+
+		Ok(StatusCode::OK)
+	} else {
+		Err(FileError::Unauthorised)
 	}
-
-	Ok(StatusCode::OK)
+	
 }
 
 async fn file_length(file_path: String) -> Option<usize> {
@@ -94,20 +109,24 @@ async fn main() {
 	_ = tokio::fs::remove_dir_all("uploads").await;
 	_ = tokio::fs::create_dir("uploads").await;
 
-	// Setup the Axum router with the routes
-	let app = Router::new()
-		.route("/upload/:file_id", post(append_data))
-		.route("/length/:file_id", head(check_file_length));
+	let config = RustlsConfig::from_pem_file(
+		PathBuf::from("certs").join("cert.pem"),
+		PathBuf::from("certs").join("key.pem"),
+	)
+	.await
+	.unwrap();
 
-	// Define the address to run the server on
-	let addr = "0.0.0.0:3000".parse().unwrap();
+	let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
 
-	// Print out the address to the console, so we know where the server is running
-	println!("Listening on {}", addr);
-
-	// Run the Axum server
-	axum::Server::bind(&addr)
-		.serve(app.into_make_service())
+	axum_server::bind_rustls(addr, config)
+		.serve(router().into_make_service())
 		.await
 		.unwrap();
+}
+
+#[allow(dead_code)]
+fn router() -> Router {
+	Router::new()
+		.route("/upload/:file_id", post(append_data))
+		.route("/length/:file_id", head(check_file_length))
 }
