@@ -8,3 +8,5 @@ services:
     - ./uploads:/uploads
     ports:
       - 5050:3000
+    environment:
+      - USE_TLS=${USE_TLS}

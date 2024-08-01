@@ -6,6 +6,9 @@ COPY ./Cargo.toml ./Cargo.toml
 RUN ls ./Cargo.lock && cp ./Cargo.lock ./ || true
 COPY ./src ./src
 
+ARG USE_TLS
+ENV USE_TLS=${USE_TLS}
+
 RUN cargo build --release --target x86_64-unknown-linux-musl
 
 FROM scratch
