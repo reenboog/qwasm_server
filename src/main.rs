@@ -1,22 +1,23 @@
+pub mod content_range;
+pub mod node;
+pub mod storage;
+
 use axum::{
-	body::Body,
+	body::{Body, BodyDataStream},
 	extract::{self, Path, Request},
-	http::{HeaderValue, Response as HttpResponse, StatusCode},
+	http::{HeaderMap, HeaderValue, Response as HttpResponse, StatusCode},
 	response::{IntoResponse, Response},
 	routing::{delete, get, head, post},
 	Json, Router,
 };
 use axum_server::{tls_rustls::RustlsConfig, Server};
+use content_range::ContentRange;
 use futures_util::StreamExt;
 use node::LockedNode;
-use std::{env, net::SocketAddr, path::PathBuf};
-use std::{str::FromStr, sync::Arc};
+use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 use storage::Storage;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::OpenOptions, sync::Mutex};
-
-pub mod node;
-pub mod storage;
 
 // Define a custom error type that can convert into an HTTP response
 #[derive(Debug)]
@@ -67,135 +68,97 @@ impl State {
 	}
 }
 
-async fn stream_upload(Path(file_id): Path<String>, request: Request) -> Result<StatusCode, Error> {
+async fn open_file_at_offset(
+	file_id: &str,
+	create: bool,
+	append: bool,
+	write: bool,
+	offset: u64,
+) -> Result<tokio::fs::File, Error> {
 	let path = format!("./uploads/{}", file_id);
 
 	println!("path to process: {}", path);
 
 	let mut file = OpenOptions::new()
-		.create(true)
-		.append(true)
+		.create(create)
+		.append(append)
+		.write(write)
 		.open(path)
-		.await?;
+		.await
+		.map_err(|e| Error::from(e))?;
 
-	if request
-		.headers()
+	file.seek(tokio::io::SeekFrom::Start(offset)).await?;
+
+	Ok(file)
+}
+
+async fn check_auth(headers: &HeaderMap) -> Result<(), Error> {
+	if headers
 		.get("x-uploader-auth")
 		.eq(&Some(&HeaderValue::from_bytes(b"aabb1122").unwrap()))
 	{
-		let mut stream = request.into_body().into_data_stream();
-
-		println!("auth passed, working...");
-
-		while let Some(chunk) = stream.next().await {
-			let data = chunk.unwrap(); // FIXME: handle errors properly
-			println!("{}: chunk size - {}", file_id, data.len());
-
-			file.write_all(&data).await?;
-		}
-
-		Ok(StatusCode::OK)
+		Ok(())
 	} else {
 		Err(Error::Unauthorised)
 	}
 }
 
-async fn upload_ranged(Path(file_id): Path<String>, request: Request) -> Result<StatusCode, Error> {
-	let path = format!("./uploads/{}", file_id);
+async fn process_data_stream(
+	file_id: &str,
+	mut file: tokio::fs::File,
+	mut stream: BodyDataStream,
+) -> Result<StatusCode, Error> {
+	println!("auth passed, working...");
 
-	println!("path to process: {}", path);
+	while let Some(chunk) = stream.next().await {
+		let data = chunk.unwrap(); // FIXME: handle errors properly
+		println!("{}: chunk size - {}", file_id, data.len());
 
-	let content_range_header = request
+		file.write_all(&data).await?;
+	}
+
+	Ok(StatusCode::OK)
+}
+
+async fn handle_upload(
+	Path(file_id): Path<String>,
+	request: Request<Body>,
+	append: bool,
+) -> Result<StatusCode, Error> {
+	let range = request
 		.headers()
 		.get("Content-Range")
+		.and_then(|header| header.to_str().ok())
+		.and_then(|header_str| ContentRange::from_str(header_str).ok())
 		.ok_or(Error::InvalidRange)?;
-	let content_range_str = content_range_header
-		.to_str()
-		.map_err(|_| Error::InvalidRange)?;
-	let ContentRange {
-		range_start,
-		range_end,
-		size,
-	} = ContentRange::from_str(content_range_str).map_err(|_| Error::InvalidRange)?;
+
+	check_auth(&request.headers()).await?;
 
 	println!(
-		"received a range: {}, {}, {}",
-		range_start,
-		range_end,
-		size.unwrap_or(0u64)
+		"received: {}-{}/{} ",
+		range.range_start,
+		range.range_end,
+		range.size.unwrap_or(0)
 	);
 
-	if request
-		.headers()
-		.get("x-uploader-auth")
-		.eq(&Some(&HeaderValue::from_bytes(b"aabb1122").unwrap()))
-	{
-		let mut file = OpenOptions::new()
-			.create(true)
-			.write(true)
-			.open(path)
-			.await?;
+	let file = open_file_at_offset(&file_id, true, append, true, range.range_start).await?;
+	let stream = request.into_body().into_data_stream();
 
-		file.seek(tokio::io::SeekFrom::Start(range_start)).await?;
-
-		let mut stream = request.into_body().into_data_stream();
-
-		println!("auth passed, working...");
-
-		while let Some(chunk) = stream.next().await {
-			let data = chunk.unwrap(); // FIXME: handle errors properly
-			println!("{}: chunk size - {}", file_id, data.len());
-
-			file.write_all(&data).await?;
-		}
-
-		Ok(StatusCode::OK)
-	} else {
-		Err(Error::Unauthorised)
-	}
+	process_data_stream(&file_id, file, stream).await
 }
 
-#[derive(Debug)]
-struct ContentRange {
-	range_start: u64,
-	range_end: u64,
-	size: Option<u64>,
+async fn upload_stream(
+	Path(file_id): Path<String>,
+	request: Request<Body>,
+) -> Result<StatusCode, Error> {
+	handle_upload(Path(file_id), request, false).await
 }
 
-impl FromStr for ContentRange {
-	type Err = ();
-
-	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let parts: Vec<&str> = s.split_whitespace().collect();
-		if parts.len() != 2 || parts[0] != "bytes" {
-			return Err(());
-		}
-
-		let ranges: Vec<&str> = parts[1].split('/').collect();
-		if ranges.len() != 2 {
-			return Err(());
-		}
-
-		let size = if ranges[1] == "*" {
-			None
-		} else {
-			Some(ranges[1].parse().map_err(|_| ())?)
-		};
-
-		let range_parts: Vec<&str> = ranges[0].split('-').collect();
-		if range_parts.len() != 2 {
-			return Err(());
-		}
-
-		let range_start = range_parts[0].parse().map_err(|_| ())?;
-		let range_end = range_parts[1].parse().map_err(|_| ())?;
-
-		Ok(ContentRange {
-			range_start,
-			range_end,
-			size,
-		})
-	}
+async fn upload_ranged(
+	Path(file_id): Path<String>,
+	request: Request<Body>,
+) -> Result<StatusCode, Error> {
+	handle_upload(Path(file_id), request, false).await
 }
 
 async fn file_length(file_path: String) -> Option<usize> {
@@ -209,6 +172,7 @@ async fn file_length(file_path: String) -> Option<usize> {
 
 async fn check_file_length(Path(file_id): Path<String>) -> Result<HttpResponse<Body>, Error> {
 	let file_path = format!("uploads/{}", file_id);
+
 	match file_length(file_path).await {
 		Some(length) => Ok(Response::builder()
 			.status(StatusCode::OK)
@@ -280,9 +244,7 @@ async fn main() {
 	let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
 
 	// Create the application state
-	let state = State {
-		storage: Arc::new(Mutex::new(Storage::new())),
-	};
+	let state = State::new();
 
 	// Check the environment variable to determine if TLS should be used
 	let use_tls = env::var("USE_TLS").unwrap_or_else(|_| "false".into()) == "true";
@@ -314,10 +276,10 @@ async fn main() {
 #[allow(dead_code)]
 fn router(state: State) -> Router {
 	Router::new()
-		.route("/uploads/stream/:file_id", post(stream_upload))
+		.route("/uploads/stream/:file_id", post(upload_stream))
 		.route("/uploads/chunk/:file_id", post(upload_ranged))
-		.route("/length/:file_id", head(check_file_length))
-		.route("/nodes/", post(add_nodes))
+		.route("/uploads/:file_id", head(check_file_length))
+		.route("/nodes", post(add_nodes))
 		.route("/nodes/:file_id", delete(delete_node))
 		.route("/nodes", get(get_all))
 		.route("/nodes/purge", post(purge))
