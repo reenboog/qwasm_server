@@ -108,6 +108,14 @@ impl Storage {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::{encrypted::Encrypted, salt::Salt};
+
+	fn stub_encrypted() -> Encrypted {
+		Encrypted {
+			ct: vec![],
+			salt: Salt::generate(),
+		}
+	}
 
 	#[test]
 	fn test_move_node_to_itself() {
@@ -119,7 +127,7 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -136,13 +144,13 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -159,13 +167,13 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -182,7 +190,7 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -199,21 +207,21 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
 		storage.add(LockedNode {
 			id: 2,
 			parent_id: 1,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -230,13 +238,13 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -254,25 +262,25 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 2,
 			parent_id: 1,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 3,
 			parent_id: 2,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -293,25 +301,25 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 2,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 3,
 			parent_id: 1,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -339,7 +347,7 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -358,19 +366,19 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 2,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -395,7 +403,7 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -414,13 +422,13 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
@@ -443,13 +451,13 @@ mod tests {
 		storage.add(LockedNode {
 			id: 0,
 			parent_id: NO_PARENT_ID,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
 			id: 1,
 			parent_id: 0,
-			content: vec![],
+			content: stub_encrypted(),
 			dirty: false,
 		});
 
