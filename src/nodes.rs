@@ -1,5 +1,9 @@
-use crate::node::{LockedNode, NO_PARENT_ID};
+use crate::encrypted::Encrypted;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+const NO_PARENT_ID: u64 = u64::MAX;
+const ROOT_ID: u64 = 0;
 
 #[derive(PartialEq, Debug)]
 pub enum Error {
@@ -7,18 +11,24 @@ pub enum Error {
 	NotAllowed,
 }
 
-pub struct Storage {
-	// keep a hash of the most recent state?
-	branches: HashMap<u64, Vec<u64>>,
-	nodes: HashMap<u64, LockedNode>,
-	// shares
-	// invites
-	// users:
-	// 	priv
-	//  pub
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct LockedNode {
+	pub id: u64,
+	pub parent_id: u64,
+	pub content: Encrypted,
+	pub dirty: bool,
+	// pending?
 }
 
-impl Storage {
+pub struct Nodes {
+	// keep a hash of the most recent state?
+	// { parent_id, children_ids }
+	branches: HashMap<u64, Vec<u64>>,
+	// { id, node }
+	nodes: HashMap<u64, LockedNode>,
+}
+
+impl Nodes {
 	pub fn new() -> Self {
 		Self {
 			branches: HashMap::new(),
@@ -54,11 +64,6 @@ impl Storage {
 
 	pub fn get_all(&self) -> Vec<LockedNode> {
 		self.nodes.values().cloned().collect()
-	}
-
-	pub fn purge(&mut self) {
-		self.nodes = HashMap::new();
-		self.branches = HashMap::new();
 	}
 
 	pub fn move_to(&mut self, id: u64, new_parent: u64) -> Result<(), Error> {
@@ -119,10 +124,7 @@ mod tests {
 
 	#[test]
 	fn test_move_node_to_itself() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -136,10 +138,7 @@ mod tests {
 
 	#[test]
 	fn test_move_node_to_own_parent() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -159,10 +158,7 @@ mod tests {
 
 	#[test]
 	fn test_move_node_to_non_existent_parent() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -182,10 +178,7 @@ mod tests {
 
 	#[test]
 	fn test_move_non_existent_node() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -199,10 +192,7 @@ mod tests {
 
 	#[test]
 	fn test_move_node_to_valid_parent() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -230,10 +220,7 @@ mod tests {
 
 	#[test]
 	fn test_move_node_outside_hierarchy() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -254,10 +241,7 @@ mod tests {
 
 	#[test]
 	fn test_prevent_circular_reference() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -293,10 +277,7 @@ mod tests {
 
 	#[test]
 	fn test_move_node_several_times() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -339,10 +320,7 @@ mod tests {
 
 	#[test]
 	fn test_remove_node_no_children() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -358,10 +336,7 @@ mod tests {
 
 	#[test]
 	fn test_remove_node_with_children() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -395,10 +370,7 @@ mod tests {
 
 	#[test]
 	fn test_remove_non_existent_node() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -414,10 +386,7 @@ mod tests {
 
 	#[test]
 	fn test_remove_root_node() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,
@@ -443,10 +412,7 @@ mod tests {
 
 	#[test]
 	fn test_remove_leaf_node() {
-		let mut storage = Storage {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		};
+		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
 			id: 0,

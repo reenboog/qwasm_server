@@ -17,16 +17,10 @@ serde_json = "1.0"
 
 # crypto
 sha2 = { version = "0.10" }
-hmac = { version = "0.12.1" }
 
 # randomness
 rand = { version = "0.8.5" }
 getrandom = { version = "0.2.14", features = ["js"] }
 
-# 448 ec
-x448 = { version = "0.6" }
-# TODO: move to our own bitbucket repo?
-ed448-rust = { git = "https://github.com/reenboog/ed448-rust", branch = "master" }
-
-# aes gcm
-aes-gcm = "0.9.0"
+# encoding
+base64 = { version = "0.13" }

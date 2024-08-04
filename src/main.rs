@@ -1,21 +1,17 @@
 mod aes_gcm;
+mod base64_blobs;
 mod content_range;
 mod ed448;
 mod encrypted;
-mod hkdf;
-mod hmac;
 mod id;
 mod identity;
 mod key;
-mod key_pair;
 mod lock;
-mod node;
-mod private_key;
+mod nodes;
 mod public_key;
 mod salt;
-mod share;
-mod storage;
-mod user;
+mod shares;
+mod users;
 mod x448;
 
 use axum::{
@@ -29,69 +25,84 @@ use axum::{
 use axum_server::{tls_rustls::RustlsConfig, Server};
 use content_range::ContentRange;
 use futures_util::StreamExt;
-use node::LockedNode;
+use nodes::LockedNode;
+use nodes::Nodes;
+use shares::{Shares, Welcome};
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
-use storage::Storage;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::OpenOptions, sync::Mutex};
+use users::{LockedUser, Login, Signup, Users};
 
 // Define a custom error type that can convert into an HTTP response
 #[derive(Debug)]
 enum Error {
-	IOError(std::io::Error),
-	ReadError(hyper::Error),
+	Io(String),
 	Unauthorised,
 	InvalidRange,
 	NotFound(u64),
+	NoInvite(String),
 }
 
 impl From<std::io::Error> for Error {
 	fn from(err: std::io::Error) -> Self {
-		Error::IOError(err)
+		Error::Io(format!("{}", err))
 	}
 }
 
 impl From<hyper::Error> for Error {
 	fn from(err: hyper::Error) -> Self {
-		Error::ReadError(err)
+		Error::Io(format!("{}", err))
+	}
+}
+
+impl From<axum::Error> for Error {
+	fn from(err: axum::Error) -> Self {
+		Error::Io(format!("{}", err))
 	}
 }
 
 impl IntoResponse for Error {
 	fn into_response(self) -> Response {
-		let status = match self {
-			Error::IOError(_) => StatusCode::SERVICE_UNAVAILABLE,
-			Error::ReadError(_) => StatusCode::SERVICE_UNAVAILABLE,
+		match self {
+			Error::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
 			Error::Unauthorised => StatusCode::FORBIDDEN,
 			Error::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
 			Error::NotFound(_) => StatusCode::NOT_FOUND,
-		};
-
-		status.into_response()
+			Error::NoInvite(_) => StatusCode::NOT_FOUND,
+		}
+		.into_response()
 	}
 }
 
 #[derive(Clone)]
 struct State {
-	storage: Arc<Mutex<Storage>>,
+	nodes: Arc<Mutex<Nodes>>,
+	shares: Arc<Mutex<Shares>>,
+	users: Arc<Mutex<Users>>,
 }
 
 impl State {
 	fn new() -> Self {
 		Self {
-			storage: Arc::new(Mutex::new(Storage::new())),
+			nodes: Arc::new(Mutex::new(Nodes::new())),
+			shares: Arc::new(Mutex::new(Shares::new())),
+			users: Arc::new(Mutex::new(Users::new())),
 		}
+	}
+
+	fn purge(&mut self) {
+		*self = Self::new();
 	}
 }
 
 async fn open_file_at_offset(
-	file_id: &str,
+	file_id: u64,
 	create: bool,
 	append: bool,
 	write: bool,
 	offset: u64,
 ) -> Result<tokio::fs::File, Error> {
-	let path = format!("./uploads/{}", file_id);
+	let path = path_for_file_id(file_id);
 
 	println!("path to process: {}", path);
 
@@ -120,24 +131,24 @@ async fn check_auth(headers: &HeaderMap) -> Result<(), Error> {
 }
 
 async fn process_data_stream(
-	file_id: &str,
+	file_id: u64,
 	mut file: tokio::fs::File,
 	mut stream: BodyDataStream,
 ) -> Result<StatusCode, Error> {
 	println!("auth passed, working...");
 
 	while let Some(chunk) = stream.next().await {
-		let data = chunk.unwrap(); // FIXME: handle errors properly
-		println!("{}: chunk size - {}", file_id, data.len());
+		let data = chunk?;
 
 		file.write_all(&data).await?;
+		println!("{}: chunk size - {}", file_id, data.len());
 	}
 
 	Ok(StatusCode::OK)
 }
 
 async fn handle_upload(
-	Path(file_id): Path<String>,
+	file_id: u64,
 	request: Request<Body>,
 	append: bool,
 ) -> Result<StatusCode, Error> {
@@ -157,24 +168,24 @@ async fn handle_upload(
 		range.size.unwrap_or(0)
 	);
 
-	let file = open_file_at_offset(&file_id, true, append, true, range.range_start).await?;
+	let file = open_file_at_offset(file_id, true, append, true, range.range_start).await?;
 	let stream = request.into_body().into_data_stream();
 
-	process_data_stream(&file_id, file, stream).await
+	process_data_stream(file_id, file, stream).await
 }
 
 async fn upload_stream(
-	Path(file_id): Path<String>,
+	Path(file_id): Path<u64>,
 	request: Request<Body>,
 ) -> Result<StatusCode, Error> {
-	handle_upload(Path(file_id), request, false).await
+	handle_upload(file_id, request, false).await
 }
 
 async fn upload_ranged(
-	Path(file_id): Path<String>,
+	Path(file_id): Path<u64>,
 	request: Request<Body>,
 ) -> Result<StatusCode, Error> {
-	handle_upload(Path(file_id), request, false).await
+	handle_upload(file_id, request, false).await
 }
 
 async fn file_length(file_path: String) -> Option<usize> {
@@ -195,33 +206,119 @@ async fn check_file_length(Path(file_id): Path<String>) -> Result<HttpResponse<B
 			.header("Content-Length", length.to_string())
 			.body(Body::empty())
 			.unwrap()),
-		None => Err(Error::IOError(std::io::Error::new(
-			std::io::ErrorKind::NotFound,
-			"File not found",
-		))),
+		None => Err(Error::Io("File not found".to_string())),
 	}
 }
 
 async fn add_nodes(
 	extract::State(state): extract::State<State>,
-	extract::Json(nodes): extract::Json<Vec<LockedNode>>,
+	extract::Json(new_nodes): extract::Json<Vec<LockedNode>>,
 ) -> Result<StatusCode, Error> {
-	let mut storage = state.storage.lock().await;
+	let mut nodes = state.nodes.lock().await;
 
-	nodes.into_iter().for_each(|n| {
+	new_nodes.into_iter().for_each(|n| {
 		println!("inserting {}", n.id);
 
-		storage.add(n);
+		nodes.add(n);
 	});
 
 	Ok(StatusCode::CREATED)
+}
+
+async fn signup(
+	extract::State(state): extract::State<State>,
+	extract::Json(signup): extract::Json<Signup>,
+) -> Result<StatusCode, Error> {
+	let mut nodes = state.nodes.lock().await;
+	let mut shares = state.shares.lock().await;
+	let mut users = state.users.lock().await;
+	let user = signup.user;
+	let user_id = user._pub.id();
+
+	user.roots.iter().for_each(|node| {
+		nodes.add(node.clone());
+	});
+
+	user.shares.iter().for_each(|share| {
+		shares.add(share.clone());
+	});
+	shares.delete_invite(&signup.email);
+
+	users.add_priv(user_id, user.encrypted_priv);
+	users.add_pub(user_id, user._pub);
+	// password should be hashed and stored as well, but no need for now
+	users.add_credentials(&signup.email, user_id);
+
+	println!("signed up {}", signup.email);
+
+	// you'd generate an access token here for subsequent requests
+
+	Ok(StatusCode::CREATED)
+}
+
+async fn login(
+	extract::State(state): extract::State<State>,
+	extract::Json(login): extract::Json<Login>,
+) -> Result<(StatusCode, Json<LockedUser>), Error> {
+	let nodes = state.nodes.lock().await;
+	let shares = state.shares.lock().await;
+	let users = state.users.lock().await;
+
+	// not sure, if it's unauthorised (more likely) or not found
+	let user_id = users
+		.id_for_email(&login.email)
+		.ok_or(Error::Unauthorised)?;
+	let _priv = users.priv_for_id(user_id).ok_or(Error::Unauthorised)?;
+	let _pub = users.pub_for_id(user_id).ok_or(Error::Unauthorised)?;
+	let shares = shares.all_shares_for_user(user_id);
+	// FIXME: return nodes based on exports and pending uploads (if uploader == users.id_for_email(email))
+	let roots = nodes.get_all();
+
+	println!("logged in {}", login.email);
+
+	// you'd generate an access token here for subsequent requests
+
+	Ok((
+		StatusCode::OK,
+		Json(LockedUser {
+			encrypted_priv: _priv.clone(),
+			_pub: _pub.clone(),
+			shares,
+			roots,
+		}),
+	))
+}
+
+async fn get_invite(
+	extract::State(state): extract::State<State>,
+	Path(email): Path<String>,
+) -> Result<(StatusCode, Json<Welcome>), Error> {
+	let shares = state.shares.lock().await;
+	let nodes = state.nodes.lock().await;
+
+	if let Some(invite) = shares.invie_for_mail(&email) {
+		let welcome = Welcome {
+			user_id: invite.user_id,
+			sender: invite.sender.clone(),
+			imports: invite.payload.clone(),
+			sig: invite.sig.clone(),
+			// FIXME: return nodes based on exports and pending uploads (if uploader == users.id_for_email(email))
+			nodes: nodes.get_all(),
+		};
+
+		Ok((StatusCode::CREATED, Json(welcome)))
+	} else {
+		Err(Error::NoInvite(email))
+	}
 }
 
 async fn delete_node(
 	extract::State(state): extract::State<State>,
 	Path(file_id): Path<u64>,
 ) -> Result<StatusCode, Error> {
-	if let Some(_) = state.storage.lock().await.remove(file_id) {
+	if let Some(_) = state.nodes.lock().await.remove(file_id) {
+		remove_file(file_id).await;
+
 		println!("deleted {}", file_id);
 
 		Ok(StatusCode::NO_CONTENT)
@@ -235,39 +332,48 @@ async fn delete_node(
 async fn get_all(
 	extract::State(state): extract::State<State>,
 ) -> Result<(StatusCode, Json<Vec<LockedNode>>), Error> {
-	let nodes = state.storage.lock().await.get_all();
+	let nodes = state.nodes.lock().await.get_all();
 
 	println!("returnin {} nodes", nodes.len());
 
 	Ok((StatusCode::OK, Json(nodes)))
 }
 
-async fn purge(extract::State(state): extract::State<State>) -> Result<StatusCode, Error> {
-	println!("purgin all nodes");
+async fn purge(extract::State(mut state): extract::State<State>) -> Result<StatusCode, Error> {
+	println!("purgin...");
 
-	state.storage.lock().await.purge();
+	state.purge();
+
+	clear_uploads_dir().await;
 
 	Ok(StatusCode::OK)
 }
 
+async fn clear_uploads_dir() {
+	_ = tokio::fs::remove_dir_all("uploads").await;
+	_ = tokio::fs::create_dir("uploads").await;
+}
+
+async fn remove_file(id: u64) {
+	let path = path_for_file_id(id);
+
+	_ = tokio::fs::remove_file(path).await;
+}
+
+fn path_for_file_id(id: u64) -> String {
+	format!("./uploads/{}", id)
+}
+
 #[tokio::main]
 async fn main() {
-	// Remove and recreate the uploads directory for testing
-	let _ = tokio::fs::remove_dir_all("uploads").await;
-	let _ = tokio::fs::create_dir("uploads").await;
+	clear_uploads_dir().await;
 
-	// Define the address and port to bind the server
 	let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-
-	// Create the application state
 	let state = State::new();
-
-	// Check the environment variable to determine if TLS should be used
 	let use_tls = env::var("USE_TLS").unwrap_or_else(|_| "false".into()) == "true";
 	let router = router(state);
 
 	if use_tls {
-		// Load the TLS configuration
 		let config = RustlsConfig::from_pem_file(
 			PathBuf::from("certs").join("cert.pem"),
 			PathBuf::from("certs").join("key.pem"),
@@ -275,13 +381,11 @@ async fn main() {
 		.await
 		.unwrap();
 
-		// Bind and serve the application with TLS
 		axum_server::bind_rustls(addr, config)
 			.serve(router.into_make_service())
 			.await
 			.unwrap();
 	} else {
-		// Bind and serve the application without TLS
 		Server::bind(addr)
 			.serve(router.into_make_service())
 			.await
@@ -298,6 +402,9 @@ fn router(state: State) -> Router {
 		.route("/nodes", post(add_nodes))
 		.route("/nodes/:file_id", delete(delete_node))
 		.route("/nodes", get(get_all))
-		.route("/nodes/purge", post(purge))
+		.route("/purge", post(purge))
+		.route("/signup", post(signup))
+		.route("/login", post(login))
+		.route("/invite/:email", get(get_invite))
 		.with_state(state)
 }
