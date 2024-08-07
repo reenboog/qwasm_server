@@ -10,6 +10,7 @@ mod lock;
 mod nodes;
 mod public_key;
 mod salt;
+mod sessions;
 mod shares;
 mod users;
 mod x448;
@@ -27,7 +28,8 @@ use content_range::ContentRange;
 use futures_util::StreamExt;
 use nodes::LockedNode;
 use nodes::Nodes;
-use shares::{Shares, Welcome};
+use sessions::Sessions;
+use shares::{Invite, Shares, Welcome};
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::OpenOptions, sync::Mutex};
@@ -79,6 +81,7 @@ struct State {
 	nodes: Arc<Mutex<Nodes>>,
 	shares: Arc<Mutex<Shares>>,
 	users: Arc<Mutex<Users>>,
+	sessions: Arc<Mutex<Sessions>>,
 }
 
 impl State {
@@ -87,11 +90,45 @@ impl State {
 			nodes: Arc::new(Mutex::new(Nodes::new())),
 			shares: Arc::new(Mutex::new(Shares::new())),
 			users: Arc::new(Mutex::new(Users::new())),
+			sessions: Arc::new(Mutex::new(Sessions::new())),
 		}
 	}
 
 	fn purge(&mut self) {
 		*self = Self::new();
+	}
+
+	async fn user_by_email(&self, email: &str) -> Result<LockedUser, Error> {
+		println!("getting user with email: {}", email);
+
+		let id = self
+			.users
+			.lock()
+			.await
+			.id_for_email(&email)
+			.ok_or(Error::Unauthorised)?;
+
+		self.user_by_id(id).await
+	}
+	async fn user_by_id(&self, id: u64) -> Result<LockedUser, Error> {
+		let nodes = self.nodes.lock().await;
+		let shares = self.shares.lock().await;
+		let users = self.users.lock().await;
+
+		println!("getting user by id: {}", id);
+
+		let _priv = users.priv_for_id(id).ok_or(Error::Unauthorised)?;
+		let _pub = users.pub_for_id(id).ok_or(Error::Unauthorised)?;
+		let shares = shares.all_shares_for_user(id);
+		// FIXME: return nodes based on exports and pending uploads (if uploader == users.id_for_email(email))
+		let roots = nodes.get_all();
+
+		Ok(LockedUser {
+			encrypted_priv: _priv.clone(),
+			_pub: _pub.clone(),
+			shares,
+			roots,
+		})
 	}
 }
 
@@ -240,7 +277,7 @@ async fn signup(
 	});
 
 	user.shares.iter().for_each(|share| {
-		shares.add(share.clone());
+		shares.add_share(share.clone());
 	});
 	shares.delete_invite(&signup.email);
 
@@ -260,33 +297,15 @@ async fn login(
 	extract::State(state): extract::State<State>,
 	extract::Json(login): extract::Json<Login>,
 ) -> Result<(StatusCode, Json<LockedUser>), Error> {
-	let nodes = state.nodes.lock().await;
-	let shares = state.shares.lock().await;
-	let users = state.users.lock().await;
+	println!("loggin in via email/pass: {}", login.email);
 
-	// not sure, if it's unauthorised (more likely) or not found
-	let user_id = users
-		.id_for_email(&login.email)
-		.ok_or(Error::Unauthorised)?;
-	let _priv = users.priv_for_id(user_id).ok_or(Error::Unauthorised)?;
-	let _pub = users.pub_for_id(user_id).ok_or(Error::Unauthorised)?;
-	let shares = shares.all_shares_for_user(user_id);
-	// FIXME: return nodes based on exports and pending uploads (if uploader == users.id_for_email(email))
-	let roots = nodes.get_all();
+	let user = state.user_by_email(&login.email).await?;
 
 	println!("logged in {}", login.email);
 
 	// you'd generate an access token here for subsequent requests
 
-	Ok((
-		StatusCode::OK,
-		Json(LockedUser {
-			encrypted_priv: _priv.clone(),
-			_pub: _pub.clone(),
-			shares,
-			roots,
-		}),
-	))
+	Ok((StatusCode::OK, Json(user)))
 }
 
 async fn get_invite(
@@ -295,6 +314,8 @@ async fn get_invite(
 ) -> Result<(StatusCode, Json<Welcome>), Error> {
 	let shares = state.shares.lock().await;
 	let nodes = state.nodes.lock().await;
+
+	println!("getting invite: {}", email);
 
 	if let Some(invite) = shares.invie_for_mail(&email) {
 		let welcome = Welcome {
@@ -306,9 +327,84 @@ async fn get_invite(
 			nodes: nodes.get_all(),
 		};
 
-		Ok((StatusCode::CREATED, Json(welcome)))
+		// TODO: do I need thi sstatus code?
+		Ok((StatusCode::OK, Json(welcome)))
 	} else {
 		Err(Error::NoInvite(email))
+	}
+}
+
+async fn get_master_key(
+	extract::State(state): extract::State<State>,
+	Path(user_id): Path<u64>,
+) -> Result<(StatusCode, Json<encrypted::Encrypted>), Error> {
+	let users = state.users.lock().await;
+
+	println!("getting mk: {}", user_id);
+
+	if let Some(mk) = users.mk_for_id(user_id) {
+		Ok((StatusCode::OK, Json(mk.clone())))
+	} else {
+		Err(Error::NotFound(user_id))
+	}
+}
+
+async fn get_user(
+	extract::State(state): extract::State<State>,
+	Path(user_id): Path<u64>,
+) -> Result<(StatusCode, Json<LockedUser>), Error> {
+	let user = state.user_by_id(user_id).await?;
+
+	println!("logged in {}", user_id);
+
+	// you'd generate an access token here for subsequent requests
+
+	Ok((StatusCode::OK, Json(user)))
+}
+
+async fn invite(
+	extract::State(state): extract::State<State>,
+	extract::Json(invite): extract::Json<Invite>,
+) -> Result<StatusCode, Error> {
+	let mut shares = state.shares.lock().await;
+	let email = invite.email.clone();
+
+	println!("inviting: {}", email);
+
+	shares.add_invite(invite, &email);
+
+	Ok(StatusCode::CREATED)
+}
+
+async fn lock_session(
+	extract::State(state): extract::State<State>,
+	Path(token_id): Path<String>,
+	extract::Json(token): extract::Json<shares::Seed>,
+) -> Result<StatusCode, Error> {
+	let mut sessions = state.sessions.lock().await;
+
+	println!("locking session: {}", token_id);
+
+	sessions.add_token(&token_id, token);
+
+	Ok(StatusCode::CREATED)
+}
+
+async fn unlock_session(
+	extract::State(state): extract::State<State>,
+	Path(token_id): Path<String>,
+) -> Result<(StatusCode, Json<shares::Seed>), Error> {
+	let mut sessions = state.sessions.lock().await;
+
+	// should be authenticated probably; on another hand,
+	// session id is already supplied which should be enough, should it not?
+	println!("unlocking session: {}", token_id);
+
+	if let Some(token) = sessions.consume_token_by_id(&token_id) {
+		Ok((StatusCode::OK, Json(token)))
+	} else {
+		// TODO: a different error code or return a random token?
+		Err(Error::Unauthorised)
 	}
 }
 
@@ -398,13 +494,19 @@ fn router(state: State) -> Router {
 	Router::new()
 		.route("/uploads/stream/:file_id", post(upload_stream))
 		.route("/uploads/chunk/:file_id", post(upload_ranged))
+		// TODO: /uploads/finish/:file_id/
 		.route("/uploads/:file_id", head(check_file_length))
 		.route("/nodes", post(add_nodes))
 		.route("/nodes/:file_id", delete(delete_node))
 		.route("/nodes", get(get_all))
 		.route("/purge", post(purge))
 		.route("/signup", post(signup))
+		.route("/sessions/lock/:token_id", post(lock_session))
+		.route("/sessions/unlock/:token_id", post(unlock_session))
+		.route("/users/:user_id/mk", get(get_master_key))
+		.route("/users/:user_id", get(get_user))
 		.route("/login", post(login))
 		.route("/invite/:email", get(get_invite))
+		.route("/invite", post(invite))
 		.with_state(state)
 }

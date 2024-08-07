@@ -1,7 +1,22 @@
 use std::collections::HashMap;
 
-use crate::{ed448, identity, lock, nodes::LockedNode};
+use crate::{
+	base64_blobs::{deserialize_array_base64, serialize_array_base64},
+	ed448, identity, lock,
+	nodes::LockedNode,
+};
 use serde::{Deserialize, Serialize};
+
+const SEED_SIZE: usize = 32;
+
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Hash)]
+pub struct Seed {
+	#[serde(
+		serialize_with = "serialize_array_base64::<_, SEED_SIZE>",
+		deserialize_with = "deserialize_array_base64::<_, SEED_SIZE>"
+	)]
+	pub(crate) bytes: [u8; SEED_SIZE],
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Export {
@@ -58,7 +73,7 @@ impl Shares {
 		}
 	}
 
-	pub fn add(&mut self, share: LockedShare) {
+	pub fn add_share(&mut self, share: LockedShare) {
 		self.shares.push(share);
 	}
 
@@ -70,9 +85,9 @@ impl Shares {
 			.collect()
 	}
 
-	// pub fn exports_for_user(&self, user_id: u64) -> Vec<LockedShare> {
-	// 	todo!()
-	// }
+	pub fn add_invite(&mut self, invite: Invite, email: &str) {
+		self.invites.insert(email.to_string(), invite);
+	}
 
 	pub fn invie_for_mail(&self, email: &str) -> Option<&Invite> {
 		self.invites.get(email)

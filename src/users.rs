@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{identity, lock, nodes::LockedNode, shares::LockedShare};
+use crate::{encrypted, identity, lock, nodes::LockedNode, shares::LockedShare};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -63,6 +63,10 @@ impl Users {
 
 	pub fn pub_for_id(&self, user_id: u64) -> Option<&identity::Public> {
 		self.public_keys.get(&user_id)
+	}
+
+	pub fn mk_for_id(&self, user_id: u64) -> Option<&encrypted::Encrypted> {
+		self.priv_for_id(user_id).map(|p| &p.master_key)
 	}
 
 	pub fn add_credentials(&mut self, email: &str, id: u64) {
