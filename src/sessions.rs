@@ -1,4 +1,4 @@
-use crate::shares::Seed;
+use crate::{purge::Purge, shares::Seed};
 use std::collections::HashMap;
 
 pub struct Sessions {
@@ -7,16 +7,19 @@ pub struct Sessions {
 }
 
 impl Sessions {
-	pub fn new() -> Self {
-		Self {
-			tokens: HashMap::new(),
-		}
-	}
 	pub fn add_token(&mut self, id: &str, token: Seed) {
 		self.tokens.insert(id.to_string(), token);
 	}
 
 	pub fn consume_token_by_id(&mut self, id: &str) -> Option<Seed> {
 		self.tokens.remove(id)
+	}
+}
+
+impl Purge for Sessions {
+	fn new() -> Self {
+		Self {
+			tokens: HashMap::new(),
+		}
 	}
 }

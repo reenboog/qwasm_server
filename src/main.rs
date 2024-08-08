@@ -9,12 +9,14 @@ mod key;
 mod lock;
 mod nodes;
 mod public_key;
+mod purge;
 mod salt;
 mod sessions;
 mod shares;
 mod users;
 mod x448;
 
+use crate::purge::Purge;
 use axum::{
 	body::{Body, BodyDataStream},
 	extract::{self, Path, Request},
@@ -33,6 +35,7 @@ use shares::{Invite, Shares, Welcome};
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::OpenOptions, sync::Mutex};
+use tower_http::cors::CorsLayer;
 use users::{LockedUser, Login, Signup, Users};
 
 // Define a custom error type that can convert into an HTTP response
@@ -94,8 +97,19 @@ impl State {
 		}
 	}
 
-	fn purge(&mut self) {
-		*self = Self::new();
+	async fn purge(&mut self) {
+		{
+			self.nodes.lock().await.purge();
+		}
+		{
+			self.shares.lock().await.purge();
+		}
+		{
+			self.users.lock().await.purge();
+		}
+		{
+			self.sessions.lock().await.purge();
+		}
 	}
 
 	async fn user_by_email(&self, email: &str) -> Result<LockedUser, Error> {
@@ -438,7 +452,7 @@ async fn get_all(
 async fn purge(extract::State(mut state): extract::State<State>) -> Result<StatusCode, Error> {
 	println!("purgin...");
 
-	state.purge();
+	state.purge().await;
 
 	clear_uploads_dir().await;
 
@@ -508,5 +522,6 @@ fn router(state: State) -> Router {
 		.route("/login", post(login))
 		.route("/invite/:email", get(get_invite))
 		.route("/invite", post(invite))
+		.layer(CorsLayer::permissive())
 		.with_state(state)
 }

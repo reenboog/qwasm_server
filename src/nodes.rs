@@ -1,4 +1,4 @@
-use crate::encrypted::Encrypted;
+use crate::{encrypted::Encrypted, purge::Purge};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -29,13 +29,6 @@ pub struct Nodes {
 }
 
 impl Nodes {
-	pub fn new() -> Self {
-		Self {
-			branches: HashMap::new(),
-			nodes: HashMap::new(),
-		}
-	}
-
 	pub fn add(&mut self, node: LockedNode) {
 		let id = node.id;
 		let parent = node.parent_id;
@@ -106,6 +99,15 @@ impl Nodes {
 			}
 		} else {
 			Err(Error::NotFound(id))
+		}
+	}
+}
+
+impl Purge for Nodes {
+	fn new() -> Self {
+		Self {
+			branches: HashMap::new(),
+			nodes: HashMap::new(),
 		}
 	}
 }

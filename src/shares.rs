@@ -4,6 +4,7 @@ use crate::{
 	base64_blobs::{deserialize_array_base64, serialize_array_base64},
 	ed448, identity, lock,
 	nodes::LockedNode,
+	purge::Purge,
 };
 use serde::{Deserialize, Serialize};
 
@@ -66,13 +67,6 @@ pub struct Shares {
 }
 
 impl Shares {
-	pub fn new() -> Self {
-		Self {
-			shares: Vec::new(),
-			invites: HashMap::new(),
-		}
-	}
-
 	pub fn add_share(&mut self, share: LockedShare) {
 		self.shares.push(share);
 	}
@@ -95,6 +89,15 @@ impl Shares {
 
 	pub fn delete_invite(&mut self, email: &str) {
 		self.invites.remove(email);
+	}
+}
+
+impl Purge for Shares {
+	fn new() -> Self {
+		Self {
+			shares: Vec::new(),
+			invites: HashMap::new(),
+		}
 	}
 }
 

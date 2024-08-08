@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{encrypted, identity, lock, nodes::LockedNode, shares::LockedShare};
+use crate::{encrypted, identity, lock, nodes::LockedNode, purge::Purge, shares::LockedShare};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -41,14 +41,6 @@ pub struct Users {
 }
 
 impl Users {
-	pub fn new() -> Self {
-		Self {
-			credentials: HashMap::new(),
-			public_keys: HashMap::new(),
-			private_keys: HashMap::new(),
-		}
-	}
-
 	pub fn add_priv(&mut self, id: u64, _priv: lock::Lock) {
 		self.private_keys.insert(id, _priv);
 	}
@@ -78,6 +70,15 @@ impl Users {
 	}
 }
 
+impl Purge for Users {
+	fn new() -> Self {
+		Self {
+			credentials: HashMap::new(),
+			public_keys: HashMap::new(),
+			private_keys: HashMap::new(),
+		}
+	}
+}
 // invites
 // users:
 // 	priv
