@@ -26,14 +26,14 @@ use axum::{
 	Json, Router,
 };
 use axum_server::{tls_rustls::RustlsConfig, Server};
-use content_range::ContentRange;
+use content_range::{ContentRange, Range};
 use futures_util::StreamExt;
 use nodes::LockedNode;
 use nodes::Nodes;
 use sessions::Sessions;
 use shares::{Invite, Shares, Welcome};
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::OpenOptions, sync::Mutex};
 use tower_http::cors::CorsLayer;
 use users::{LockedUser, Login, Signup, Users};
@@ -124,6 +124,7 @@ impl State {
 
 		self.user_by_id(id).await
 	}
+
 	async fn user_by_id(&self, id: u64) -> Result<LockedUser, Error> {
 		let nodes = self.nodes.lock().await;
 		let shares = self.shares.lock().await;
@@ -150,6 +151,7 @@ async fn open_file_at_offset(
 	file_id: u64,
 	create: bool,
 	append: bool,
+	read: bool,
 	write: bool,
 	offset: u64,
 ) -> Result<tokio::fs::File, Error> {
@@ -160,6 +162,7 @@ async fn open_file_at_offset(
 	let mut file = OpenOptions::new()
 		.create(create)
 		.append(append)
+		.read(read)
 		.write(write)
 		.open(path)
 		.await
@@ -203,6 +206,8 @@ async fn handle_upload(
 	request: Request<Body>,
 	append: bool,
 ) -> Result<StatusCode, Error> {
+	check_auth(&request.headers()).await?;
+
 	let range = request
 		.headers()
 		.get("Content-Range")
@@ -210,16 +215,9 @@ async fn handle_upload(
 		.and_then(|header_str| ContentRange::from_str(header_str).ok())
 		.ok_or(Error::InvalidRange)?;
 
-	check_auth(&request.headers()).await?;
+	println!("received: {}", range.to_string());
 
-	println!(
-		"received: {}-{}/{} ",
-		range.range_start,
-		range.range_end,
-		range.size.unwrap_or(0)
-	);
-
-	let file = open_file_at_offset(file_id, true, append, true, range.range_start).await?;
+	let file = open_file_at_offset(file_id, true, append, false, true, range.start).await?;
 	let stream = request.into_body().into_data_stream();
 
 	process_data_stream(file_id, file, stream).await
@@ -239,7 +237,50 @@ async fn upload_ranged(
 	handle_upload(file_id, request, false).await
 }
 
+async fn read_file_chunk(file_id: u64, start: u64, end: u64) -> Result<Vec<u8>, Error> {
+	let mut file = open_file_at_offset(file_id, false, false, true, false, start).await?;
+	let mut buffer = vec![0; (end - start + 1) as usize];
+
+	file.read_exact(&mut buffer).await?;
+
+	Ok(buffer)
+}
+
+async fn download_ranged(
+	Path(file_id): Path<u64>,
+	request: Request<Body>,
+) -> Result<Response<Body>, Error> {
+	check_auth(&request.headers()).await?;
+
+	let range = request
+		.headers()
+		.get("Range")
+		.and_then(|header| header.to_str().ok())
+		.and_then(|header_str| Range::from_str(header_str).ok())
+		.ok_or(Error::InvalidRange)?;
+
+	let chunk = read_file_chunk(file_id, range.start, range.end).await?;
+
+	let response = Response::builder()
+		.status(StatusCode::PARTIAL_CONTENT)
+		.header(
+			"Content-Range",
+			ContentRange {
+				start: range.start,
+				end: range.end,
+				length: Some(chunk.len() as u64),
+			}
+			.to_string(),
+		)
+		.header("Content-Length", chunk.len())
+		.body(Body::from(chunk))
+		.unwrap();
+
+	Ok(response)
+}
+
 async fn file_length(file_path: String) -> Option<usize> {
+	// FIXME: check auth token
 	if let Ok(file) = OpenOptions::new().read(true).open(file_path).await {
 		if let Ok(metadata) = file.metadata().await {
 			return Some(metadata.len() as usize);
@@ -508,6 +549,7 @@ fn router(state: State) -> Router {
 	Router::new()
 		.route("/uploads/stream/:file_id", post(upload_stream))
 		.route("/uploads/chunk/:file_id", post(upload_ranged))
+		.route("/uploads/chunk/:file_id", get(download_ranged))
 		// TODO: /uploads/finish/:file_id/
 		.route("/uploads/:file_id", head(check_file_length))
 		.route("/nodes", post(add_nodes))
