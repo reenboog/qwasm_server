@@ -372,12 +372,20 @@ async fn login(
 
 async fn get_invite(
 	extract::State(state): extract::State<State>,
-	Path(email): Path<String>,
+	Path(email_base64): Path<String>,
 ) -> Result<(StatusCode, Json<Welcome>), Error> {
 	let shares = state.shares.lock().await;
 	let nodes = state.nodes.lock().await;
 
-	println!("getting invite: {}", email);
+	println!("getting invite: {}", email_base64);
+
+	let email = String::from_utf8(
+		base64::decode_config(&email_base64, base64::URL_SAFE)
+			.map_err(|_| Error::NoInvite(email_base64.clone()))?,
+	)
+	.map_err(|_| Error::NoInvite(email_base64.clone()))?;
+
+	println!("getting invite decoded: {}", email);
 
 	if let Some(invite) = shares.invie_for_mail(&email) {
 		let welcome = Welcome {
@@ -392,7 +400,7 @@ async fn get_invite(
 		// TODO: do I need thi sstatus code?
 		Ok((StatusCode::OK, Json(welcome)))
 	} else {
-		Err(Error::NoInvite(email))
+		Err(Error::NoInvite(email_base64))
 	}
 }
 
@@ -433,7 +441,7 @@ async fn invite(
 
 	println!("inviting: {}", email);
 
-	shares.add_invite(invite, &email);
+	shares.add_invite(invite);
 
 	Ok(StatusCode::CREATED)
 }

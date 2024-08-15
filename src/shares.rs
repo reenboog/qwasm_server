@@ -79,8 +79,8 @@ impl Shares {
 			.collect()
 	}
 
-	pub fn add_invite(&mut self, invite: Invite, email: &str) {
-		self.invites.insert(email.to_string(), invite);
+	pub fn add_invite(&mut self, invite: Invite) {
+		self.invites.insert(invite.email.to_string(), invite);
 	}
 
 	pub fn invie_for_mail(&self, email: &str) -> Option<&Invite> {
