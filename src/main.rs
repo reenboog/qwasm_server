@@ -14,6 +14,7 @@ mod salt;
 mod sessions;
 mod shares;
 mod users;
+mod webauthn;
 mod x448;
 
 use crate::purge::Purge;
@@ -37,6 +38,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::{fs::OpenOptions, sync::Mutex};
 use tower_http::cors::CorsLayer;
 use users::{LockedUser, Login, Signup, Users};
+use webauthn::Webauthn;
 
 // Define a custom error type that can convert into an HTTP response
 #[derive(Debug)]
@@ -85,6 +87,7 @@ struct State {
 	shares: Arc<Mutex<Shares>>,
 	users: Arc<Mutex<Users>>,
 	sessions: Arc<Mutex<Sessions>>,
+	webauthn: Arc<Mutex<Webauthn>>,
 }
 
 impl State {
@@ -94,6 +97,7 @@ impl State {
 			shares: Arc::new(Mutex::new(Shares::new())),
 			users: Arc::new(Mutex::new(Users::new())),
 			sessions: Arc::new(Mutex::new(Sessions::new())),
+			webauthn: Arc::new(Mutex::new(Webauthn::new())),
 		}
 	}
 
@@ -109,6 +113,9 @@ impl State {
 		}
 		{
 			self.sessions.lock().await.purge();
+		}
+		{
+			self.webauthn.lock().await.purge();
 		}
 	}
 
@@ -500,6 +507,78 @@ async fn purge(extract::State(mut state): extract::State<State>) -> Result<Statu
 	Ok(StatusCode::OK)
 }
 
+async fn webauthn_start_reg(
+	extract::State(state): extract::State<State>,
+	Path(user_id): Path<u64>,
+) -> Result<(StatusCode, Json<webauthn::Registration>), Error> {
+	let reg = webauthn::Registration::new();
+
+	let mut wauth = state.webauthn.lock().await;
+
+	wauth.add_registration(user_id, reg.clone());
+
+	Ok((StatusCode::CREATED, Json(reg)))
+}
+
+async fn webauthn_finish_reg(
+	extract::State(state): extract::State<State>,
+	Path(user_id): Path<u64>,
+	extract::Json(cred): extract::Json<webauthn::Credential>,
+) -> Result<StatusCode, Error> {
+	let mut wauth = state.webauthn.lock().await;
+
+	println!("finishing req with creds: {:?}", cred);
+
+	let reg = wauth
+		.consume_registration(user_id)
+		.ok_or(Error::Unauthorised)?;
+
+	if webauthn::verify_reg_challenge(&cred.client_data_json, reg.challenge) {
+		wauth.add_passkey(user_id, reg.prf_salt, cred.id, &cred.name, cred.attestation);
+
+		Ok(StatusCode::CREATED)
+	} else {
+		Err(Error::Unauthorised)
+	}
+}
+
+async fn webauthn_start_auth(
+	extract::State(state): extract::State<State>,
+) -> Result<(StatusCode, Json<webauthn::AuthChallenge>), Error> {
+	let mut wauth = state.webauthn.lock().await;
+
+	println!("statring auth");
+
+	let ch = webauthn::AuthChallenge::new();
+	wauth.add_auth_challenge(ch.clone());
+
+	Ok((StatusCode::CREATED, Json(ch)))
+}
+
+// may also return a session id or a bearer token if for non e2e related authentication
+async fn webauthn_finish_auth(
+	extract::State(state): extract::State<State>,
+	Path(ch_id): Path<u64>,
+	extract::Json(auth): extract::Json<webauthn::Authentication>,
+) -> Result<(StatusCode, Json<webauthn::Passkey>), Error> {
+	println!("finishing auth");
+
+	let mut wauth = state.webauthn.lock().await;
+	let ch = wauth
+		.consume_auth_challenge(ch_id)
+		.ok_or(Error::Unauthorised)?;
+
+	if webauthn::verify_auth_challenge(&auth, ch) {
+		let pk = wauth
+			.passkey_for_credential_id(&auth.id)
+			.ok_or(Error::Unauthorised)?
+			.clone();
+		Ok((StatusCode::OK, Json(pk)))
+	} else {
+		Err(Error::Unauthorised)
+	}
+}
+
 async fn clear_uploads_dir() {
 	_ = tokio::fs::remove_dir_all("uploads").await;
 	_ = tokio::fs::create_dir("uploads").await;
@@ -564,6 +643,10 @@ fn router(state: State) -> Router {
 		.route("/login", post(login))
 		.route("/invite/:email", get(get_invite))
 		.route("/invite", post(invite))
+		.route("/webauthn/start-reg/:user_id", post(webauthn_start_reg))
+		.route("/webauthn/finish-reg/:user_id", post(webauthn_finish_reg))
+		.route("/webauthn/start-auth", post(webauthn_start_auth))
+		.route("/webauthn/finish-auth/:id", post(webauthn_finish_auth))
 		.layer(CorsLayer::permissive())
 		.with_state(state)
 }

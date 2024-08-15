@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub struct Sessions {
 	// { token_id, token }
 	pub tokens: HashMap<String, Seed>,
+	// webauth_ids
 }
 
 impl Sessions {
