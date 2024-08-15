@@ -523,18 +523,18 @@ async fn webauthn_start_reg(
 async fn webauthn_finish_reg(
 	extract::State(state): extract::State<State>,
 	Path(user_id): Path<u64>,
-	extract::Json(cred): extract::Json<webauthn::Credential>,
+	extract::Json(bundle): extract::Json<webauthn::Bundle>,
 ) -> Result<StatusCode, Error> {
 	let mut wauth = state.webauthn.lock().await;
 
-	println!("finishing req with creds: {:?}", cred);
+	println!("finishing req with creds: {:?}", bundle);
 
 	let reg = wauth
 		.consume_registration(user_id)
 		.ok_or(Error::Unauthorised)?;
 
-	if webauthn::verify_reg_challenge(&cred.client_data_json, reg.challenge) {
-		wauth.add_passkey(user_id, reg.prf_salt, cred.id, &cred.name, cred.attestation);
+	if webauthn::verify_reg_challenge(&bundle.cred.client_data_json, reg.challenge) {
+		wauth.add_passkey(user_id, reg.prf_salt, bundle);
 
 		Ok(StatusCode::CREATED)
 	} else {
@@ -577,6 +577,30 @@ async fn webauthn_finish_auth(
 	} else {
 		Err(Error::Unauthorised)
 	}
+}
+
+async fn get_passkeys_for_user(
+	extract::State(state): extract::State<State>,
+	Path(user_id): Path<u64>,
+) -> Result<(StatusCode, Json<Vec<webauthn::Passkey>>), Error> {
+	println!("getting passkeys for {}", user_id);
+
+	let pks = state.webauthn.lock().await.passkeys_for_user(user_id);
+
+	Ok((StatusCode::OK, Json(pks)))
+}
+
+async fn delete_passkey(
+	extract::State(state): extract::State<State>,
+	Path(user_id): Path<u64>,
+	Path(pk_id): Path<webauthn::CredentialId>,
+) -> Result<StatusCode, Error> {
+	println!("getting passkeys for {}", user_id);
+
+	let mut wauth = state.webauthn.lock().await;
+	wauth.remove_passkey(pk_id);
+
+	Ok(StatusCode::OK)
 }
 
 async fn clear_uploads_dir() {
@@ -640,6 +664,14 @@ fn router(state: State) -> Router {
 		.route("/sessions/unlock/:token_id", post(unlock_session))
 		.route("/users/:user_id/mk", get(get_master_key))
 		.route("/users/:user_id", get(get_user))
+		.route(
+			"/users/:user_id/webauthn-passkeys",
+			get(get_passkeys_for_user),
+		)
+		.route(
+			"/users/:user_id/webauthn-passkeys/:pk_id",
+			delete(delete_passkey),
+		)
 		.route("/login", post(login))
 		.route("/invite/:email", get(get_invite))
 		.route("/invite", post(invite))

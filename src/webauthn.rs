@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
 	base64_blobs::{deserialize_vec_base64, serialize_vec_base64},
+	encrypted,
 	purge::Purge,
 };
 
@@ -43,20 +44,31 @@ impl Webauthn {
 		&mut self,
 		user_id: u64,
 		prf_salt: Salt,
-		credential_id: CredentialId,
-		name: &str,
-		pub_key: Vec<u8>,
+		bundle: Bundle,
+		// credential_id: CredentialId,
+		// name: &str,
+		// pub_key: Vec<u8>,
+		// mk: encrypted::Encrypted,
 	) {
 		self.passkeys.insert(
-			credential_id.clone(),
+			bundle.cred.id.clone(),
 			Passkey {
 				prf_salt,
-				id: credential_id,
+				id: bundle.cred.id,
 				user_id,
-				name: name.to_owned(),
-				pub_key,
+				name: bundle.cred.name.to_owned(),
+				pub_key: bundle.cred.attestation,
+				mk: bundle.mk,
 			},
 		);
+	}
+
+	pub fn passkeys_for_user(&self, user_id: u64) -> Vec<Passkey> {
+		self.passkeys
+			.values()
+			.filter(|&pk| pk.user_id == user_id)
+			.cloned()
+			.collect()
 	}
 
 	pub fn remove_passkey(&mut self, id: CredentialId) {
@@ -101,6 +113,12 @@ pub struct AuthChallenge {
 	pub id: u64,
 	pub challenge: Salt,
 	pub prf_salt: Option<Salt>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Bundle {
+	pub cred: Credential,
+	pub mk: encrypted::Encrypted,
 }
 
 impl AuthChallenge {
@@ -171,6 +189,7 @@ pub struct Passkey {
 		deserialize_with = "deserialize_vec_base64"
 	)]
 	pub pub_key: Vec<u8>,
+	pub mk: encrypted::Encrypted,
 }
 
 pub fn verify_reg_challenge(_ch: &str, _against: Salt) -> bool {
