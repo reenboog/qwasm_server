@@ -41,12 +41,7 @@ impl Webauthn {
 		self.pending_registrations.remove(&user_id)
 	}
 
-	pub fn add_passkey(
-		&mut self,
-		user_id: Uid,
-		prf_salt: Salt,
-		bundle: Bundle,
-	) {
+	pub fn add_passkey(&mut self, user_id: Uid, prf_salt: Salt, bundle: Bundle) {
 		self.passkeys.insert(
 			bundle.cred.id.clone(),
 			Passkey {

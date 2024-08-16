@@ -47,12 +47,6 @@ impl PartialEq<Uid> for u64 {
 	}
 }
 
-impl ToString for Uid {
-	fn to_string(&self) -> String {
-		self.0.to_string()
-	}
-}
-
 impl FromStr for Uid {
 	type Err = String;
 

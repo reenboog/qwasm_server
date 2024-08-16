@@ -203,7 +203,7 @@ async fn process_data_stream(
 		let data = chunk?;
 
 		file.write_all(&data).await?;
-		println!("{}: chunk size - {}", file_id.to_string(), data.len());
+		println!("{}: chunk size - {}", file_id.to_base64(), data.len());
 	}
 
 	Ok(StatusCode::OK)
@@ -298,7 +298,7 @@ async fn file_length(file_path: String) -> Option<usize> {
 }
 
 async fn check_file_length(Path(file_id): Path<Uid>) -> Result<HttpResponse<Body>, Error> {
-	let file_path = format!("uploads/{}", file_id.to_string());
+	let file_path = format!("uploads/{}", file_id.to_base64());
 
 	match file_length(file_path).await {
 		Some(length) => Ok(Response::builder()
@@ -317,7 +317,7 @@ async fn add_nodes(
 	let mut nodes = state.nodes.lock().await;
 
 	new_nodes.into_iter().for_each(|n| {
-		println!("inserting {}", n.id.to_string());
+		println!("inserting {}", n.id.to_base64());
 
 		nodes.add(n);
 	});
@@ -411,7 +411,7 @@ async fn get_master_key(
 ) -> Result<(StatusCode, Json<encrypted::Encrypted>), Error> {
 	let users = state.users.lock().await;
 
-	println!("getting mk: {}", user_id.to_string());
+	println!("getting mk: {}", user_id.to_base64());
 
 	if let Some(mk) = users.mk_for_id(user_id) {
 		Ok((StatusCode::OK, Json(mk.clone())))
@@ -426,7 +426,7 @@ async fn get_user(
 ) -> Result<(StatusCode, Json<LockedUser>), Error> {
 	let user = state.user_by_id(user_id).await?;
 
-	println!("logged in {}", user_id.to_string());
+	println!("logged in {}", user_id.to_base64());
 
 	// you'd generate an access token here for subsequent requests
 
@@ -454,7 +454,7 @@ async fn lock_session(
 ) -> Result<StatusCode, Error> {
 	let mut sessions = state.sessions.lock().await;
 
-	println!("locking session: {}", token_id.to_string());
+	println!("locking session: {}", token_id.to_base64());
 
 	sessions.add_token(token_id, token);
 
@@ -469,7 +469,7 @@ async fn unlock_session(
 
 	// should be authenticated probably; on another hand,
 	// session id is already supplied which should be enough, should it not?
-	println!("unlocking session: {}", token_id.to_string());
+	println!("unlocking session: {}", token_id.to_base64());
 
 	if let Some(token) = sessions.consume_token_by_id(token_id) {
 		Ok((StatusCode::OK, Json(token)))
@@ -486,11 +486,11 @@ async fn delete_node(
 	if let Some(_) = state.nodes.lock().await.remove(file_id) {
 		remove_file(file_id).await;
 
-		println!("deleted {}", file_id.to_string());
+		println!("deleted {}", file_id.to_base64());
 
 		Ok(StatusCode::NO_CONTENT)
 	} else {
-		println!("can not delete {}; not found", file_id.to_string());
+		println!("can not delete {}; not found", file_id.to_base64());
 
 		Err(Error::NotFound(file_id))
 	}
@@ -592,7 +592,7 @@ async fn get_passkeys_for_user(
 	extract::State(state): extract::State<State>,
 	Path(user_id): Path<Uid>,
 ) -> Result<(StatusCode, Json<Vec<webauthn::Passkey>>), Error> {
-	println!("getting passkeys for {}", user_id.to_string());
+	println!("getting passkeys for {}", user_id.to_base64());
 
 	let pks = state.webauthn.lock().await.passkeys_for_user(user_id);
 
@@ -624,7 +624,7 @@ async fn remove_file(id: Uid) {
 }
 
 fn path_for_file_id(id: Uid) -> String {
-	format!("./uploads/{}", id.to_string())
+	format!("./uploads/{}", id.to_base64())
 }
 
 #[tokio::main]
