@@ -29,6 +29,7 @@ use axum::{
 use axum_server::{tls_rustls::RustlsConfig, Server};
 use content_range::{ContentRange, Range};
 use futures_util::StreamExt;
+use id::Uid;
 use nodes::LockedNode;
 use nodes::Nodes;
 use sessions::Sessions;
@@ -46,7 +47,7 @@ enum Error {
 	Io(String),
 	Unauthorised,
 	InvalidRange,
-	NotFound(u64),
+	NotFound(Uid),
 	NoInvite(String),
 }
 
@@ -132,12 +133,12 @@ impl State {
 		self.user_by_id(id).await
 	}
 
-	async fn user_by_id(&self, id: u64) -> Result<LockedUser, Error> {
+	async fn user_by_id(&self, id: Uid) -> Result<LockedUser, Error> {
 		let nodes = self.nodes.lock().await;
 		let shares = self.shares.lock().await;
 		let users = self.users.lock().await;
 
-		println!("getting user by id: {}", id);
+		println!("getting user by id: {:?}", id);
 
 		let _priv = users.priv_for_id(id).ok_or(Error::Unauthorised)?;
 		let _pub = users.pub_for_id(id).ok_or(Error::Unauthorised)?;
@@ -155,7 +156,7 @@ impl State {
 }
 
 async fn open_file_at_offset(
-	file_id: u64,
+	file_id: Uid,
 	create: bool,
 	append: bool,
 	read: bool,
@@ -192,7 +193,7 @@ async fn check_auth(headers: &HeaderMap) -> Result<(), Error> {
 }
 
 async fn process_data_stream(
-	file_id: u64,
+	file_id: Uid,
 	mut file: tokio::fs::File,
 	mut stream: BodyDataStream,
 ) -> Result<StatusCode, Error> {
@@ -202,14 +203,14 @@ async fn process_data_stream(
 		let data = chunk?;
 
 		file.write_all(&data).await?;
-		println!("{}: chunk size - {}", file_id, data.len());
+		println!("{}: chunk size - {}", file_id.to_string(), data.len());
 	}
 
 	Ok(StatusCode::OK)
 }
 
 async fn handle_upload(
-	file_id: u64,
+	file_id: Uid,
 	request: Request<Body>,
 	append: bool,
 ) -> Result<StatusCode, Error> {
@@ -231,20 +232,20 @@ async fn handle_upload(
 }
 
 async fn upload_stream(
-	Path(file_id): Path<u64>,
+	Path(file_id): Path<Uid>,
 	request: Request<Body>,
 ) -> Result<StatusCode, Error> {
 	handle_upload(file_id, request, false).await
 }
 
 async fn upload_ranged(
-	Path(file_id): Path<u64>,
+	Path(file_id): Path<Uid>,
 	request: Request<Body>,
 ) -> Result<StatusCode, Error> {
 	handle_upload(file_id, request, false).await
 }
 
-async fn read_file_chunk(file_id: u64, start: u64, end: u64) -> Result<Vec<u8>, Error> {
+async fn read_file_chunk(file_id: Uid, start: u64, end: u64) -> Result<Vec<u8>, Error> {
 	let mut file = open_file_at_offset(file_id, false, false, true, false, start).await?;
 	let mut buffer = vec![0; (end - start + 1) as usize];
 
@@ -254,7 +255,7 @@ async fn read_file_chunk(file_id: u64, start: u64, end: u64) -> Result<Vec<u8>, 
 }
 
 async fn download_ranged(
-	Path(file_id): Path<u64>,
+	Path(file_id): Path<Uid>,
 	request: Request<Body>,
 ) -> Result<Response<Body>, Error> {
 	check_auth(&request.headers()).await?;
@@ -296,8 +297,8 @@ async fn file_length(file_path: String) -> Option<usize> {
 	None
 }
 
-async fn check_file_length(Path(file_id): Path<String>) -> Result<HttpResponse<Body>, Error> {
-	let file_path = format!("uploads/{}", file_id);
+async fn check_file_length(Path(file_id): Path<Uid>) -> Result<HttpResponse<Body>, Error> {
+	let file_path = format!("uploads/{}", file_id.to_string());
 
 	match file_length(file_path).await {
 		Some(length) => Ok(Response::builder()
@@ -316,7 +317,7 @@ async fn add_nodes(
 	let mut nodes = state.nodes.lock().await;
 
 	new_nodes.into_iter().for_each(|n| {
-		println!("inserting {}", n.id);
+		println!("inserting {}", n.id.to_string());
 
 		nodes.add(n);
 	});
@@ -406,11 +407,11 @@ async fn get_invite(
 
 async fn get_master_key(
 	extract::State(state): extract::State<State>,
-	Path(user_id): Path<u64>,
+	Path(user_id): Path<Uid>,
 ) -> Result<(StatusCode, Json<encrypted::Encrypted>), Error> {
 	let users = state.users.lock().await;
 
-	println!("getting mk: {}", user_id);
+	println!("getting mk: {}", user_id.to_string());
 
 	if let Some(mk) = users.mk_for_id(user_id) {
 		Ok((StatusCode::OK, Json(mk.clone())))
@@ -421,11 +422,11 @@ async fn get_master_key(
 
 async fn get_user(
 	extract::State(state): extract::State<State>,
-	Path(user_id): Path<u64>,
+	Path(user_id): Path<Uid>,
 ) -> Result<(StatusCode, Json<LockedUser>), Error> {
 	let user = state.user_by_id(user_id).await?;
 
-	println!("logged in {}", user_id);
+	println!("logged in {}", user_id.to_string());
 
 	// you'd generate an access token here for subsequent requests
 
@@ -448,29 +449,29 @@ async fn invite(
 
 async fn lock_session(
 	extract::State(state): extract::State<State>,
-	Path(token_id): Path<String>,
+	Path(token_id): Path<Uid>,
 	extract::Json(token): extract::Json<shares::Seed>,
 ) -> Result<StatusCode, Error> {
 	let mut sessions = state.sessions.lock().await;
 
-	println!("locking session: {}", token_id);
+	println!("locking session: {}", token_id.to_string());
 
-	sessions.add_token(&token_id, token);
+	sessions.add_token(token_id, token);
 
 	Ok(StatusCode::CREATED)
 }
 
 async fn unlock_session(
 	extract::State(state): extract::State<State>,
-	Path(token_id): Path<String>,
+	Path(token_id): Path<Uid>,
 ) -> Result<(StatusCode, Json<shares::Seed>), Error> {
 	let mut sessions = state.sessions.lock().await;
 
 	// should be authenticated probably; on another hand,
 	// session id is already supplied which should be enough, should it not?
-	println!("unlocking session: {}", token_id);
+	println!("unlocking session: {}", token_id.to_string());
 
-	if let Some(token) = sessions.consume_token_by_id(&token_id) {
+	if let Some(token) = sessions.consume_token_by_id(token_id) {
 		Ok((StatusCode::OK, Json(token)))
 	} else {
 		// TODO: a different error code or return a random token?
@@ -480,16 +481,16 @@ async fn unlock_session(
 
 async fn delete_node(
 	extract::State(state): extract::State<State>,
-	Path(file_id): Path<u64>,
+	Path(file_id): Path<Uid>,
 ) -> Result<StatusCode, Error> {
 	if let Some(_) = state.nodes.lock().await.remove(file_id) {
 		remove_file(file_id).await;
 
-		println!("deleted {}", file_id);
+		println!("deleted {}", file_id.to_string());
 
 		Ok(StatusCode::NO_CONTENT)
 	} else {
-		println!("can not delete {}; not found", file_id);
+		println!("can not delete {}; not found", file_id.to_string());
 
 		Err(Error::NotFound(file_id))
 	}
@@ -517,7 +518,7 @@ async fn purge(extract::State(mut state): extract::State<State>) -> Result<Statu
 
 async fn webauthn_start_reg(
 	extract::State(state): extract::State<State>,
-	Path(user_id): Path<u64>,
+	Path(user_id): Path<Uid>,
 ) -> Result<(StatusCode, Json<webauthn::Registration>), Error> {
 	let reg = webauthn::Registration::new();
 
@@ -530,7 +531,7 @@ async fn webauthn_start_reg(
 
 async fn webauthn_finish_reg(
 	extract::State(state): extract::State<State>,
-	Path(user_id): Path<u64>,
+	Path(user_id): Path<Uid>,
 	extract::Json(bundle): extract::Json<webauthn::Bundle>,
 ) -> Result<StatusCode, Error> {
 	let mut wauth = state.webauthn.lock().await;
@@ -566,7 +567,7 @@ async fn webauthn_start_auth(
 // may also return a session id or a bearer token if for non e2e related authentication
 async fn webauthn_finish_auth(
 	extract::State(state): extract::State<State>,
-	Path(ch_id): Path<u64>,
+	Path(ch_id): Path<Uid>,
 	extract::Json(auth): extract::Json<webauthn::Authentication>,
 ) -> Result<(StatusCode, Json<webauthn::Passkey>), Error> {
 	println!("finishing auth");
@@ -589,9 +590,9 @@ async fn webauthn_finish_auth(
 
 async fn get_passkeys_for_user(
 	extract::State(state): extract::State<State>,
-	Path(user_id): Path<u64>,
+	Path(user_id): Path<Uid>,
 ) -> Result<(StatusCode, Json<Vec<webauthn::Passkey>>), Error> {
-	println!("getting passkeys for {}", user_id);
+	println!("getting passkeys for {}", user_id.to_string());
 
 	let pks = state.webauthn.lock().await.passkeys_for_user(user_id);
 
@@ -616,14 +617,14 @@ async fn clear_uploads_dir() {
 	_ = tokio::fs::create_dir("uploads").await;
 }
 
-async fn remove_file(id: u64) {
+async fn remove_file(id: Uid) {
 	let path = path_for_file_id(id);
 
 	_ = tokio::fs::remove_file(path).await;
 }
 
-fn path_for_file_id(id: u64) -> String {
-	format!("./uploads/{}", id)
+fn path_for_file_id(id: Uid) -> String {
+	format!("./uploads/{}", id.to_string())
 }
 
 #[tokio::main]

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::{
 	base64_blobs::{deserialize_array_base64, serialize_array_base64},
-	ed448, identity, lock,
+	ed448,
+	id::Uid,
+	identity, lock,
 	nodes::LockedNode,
 	purge::Purge,
 };
@@ -22,10 +24,10 @@ pub struct Seed {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Export {
 	// no sig is required here; validate LockedShare instead
-	pub receiver: u64,
+	pub receiver: Uid,
 	// these are ids of the exported seeds
-	pub fs: Vec<u64>,
-	pub db: Vec<u64>,
+	pub fs: Vec<Uid>,
+	pub db: Vec<Uid>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
@@ -42,7 +44,7 @@ pub struct LockedShare {
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 pub struct Invite {
-	pub(crate) user_id: u64,
+	pub(crate) user_id: Uid,
 	pub(crate) sender: identity::Public,
 	pub(crate) email: String,
 	pub(crate) payload: lock::Lock,
@@ -52,7 +54,7 @@ pub struct Invite {
 
 #[derive(Serialize, Deserialize)]
 pub struct Welcome {
-	pub(crate) user_id: u64,
+	pub(crate) user_id: Uid,
 	pub(crate) sender: identity::Public,
 	pub(crate) imports: lock::Lock,
 	// = Invite::sig
@@ -71,7 +73,7 @@ impl Shares {
 		self.shares.push(share);
 	}
 
-	pub fn all_shares_for_user(&self, user_id: u64) -> Vec<LockedShare> {
+	pub fn all_shares_for_user(&self, user_id: Uid) -> Vec<LockedShare> {
 		self.shares
 			.iter()
 			.filter(|&share| share.sender.id() == user_id || share.export.receiver == user_id)

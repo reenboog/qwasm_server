@@ -3,21 +3,22 @@ use std::collections::HashMap;
 use crate::{
 	base64_blobs::{deserialize_vec_base64, serialize_vec_base64},
 	encrypted,
+	id::Uid,
 	purge::Purge,
 };
 
-use crate::{id, salt::Salt};
+use crate::salt::Salt;
 use serde::{Deserialize, Serialize};
 
 // See https://www.w3.org/TR/webauthn-2/ for details
 
 // just a random value; if not specified, individual salts will be generated for each passkey registration
-const PRF_SALT: Option<&[u8; Salt::SIZE]> = Some(b"k47,0v=0#f6fn!yfn20sycht,a%ay4md");
+const PRF_SALT: Option<&[u8; Salt::SIZE]> = Some(b"k47,0V=0#f6fn!yfN2Osy-ht,.%ay4md");
 
 pub struct Webauthn {
 	// { user_id, Registration }
-	pending_registrations: HashMap<u64, Registration>,
-	auth_challenges: HashMap<u64, Salt>,
+	pending_registrations: HashMap<Uid, Registration>,
+	auth_challenges: HashMap<Uid, Salt>,
 	passkeys: HashMap<CredentialId, Passkey>,
 }
 
@@ -32,23 +33,19 @@ impl Purge for Webauthn {
 }
 
 impl Webauthn {
-	pub fn add_registration(&mut self, id: u64, reg: Registration) {
+	pub fn add_registration(&mut self, id: Uid, reg: Registration) {
 		self.pending_registrations.insert(id, reg);
 	}
 
-	pub fn consume_registration(&mut self, user_id: u64) -> Option<Registration> {
+	pub fn consume_registration(&mut self, user_id: Uid) -> Option<Registration> {
 		self.pending_registrations.remove(&user_id)
 	}
 
 	pub fn add_passkey(
 		&mut self,
-		user_id: u64,
+		user_id: Uid,
 		prf_salt: Salt,
 		bundle: Bundle,
-		// credential_id: CredentialId,
-		// name: &str,
-		// pub_key: Vec<u8>,
-		// mk: encrypted::Encrypted,
 	) {
 		self.passkeys.insert(
 			bundle.cred.id.clone(),
@@ -63,7 +60,7 @@ impl Webauthn {
 		);
 	}
 
-	pub fn passkeys_for_user(&self, user_id: u64) -> Vec<Passkey> {
+	pub fn passkeys_for_user(&self, user_id: Uid) -> Vec<Passkey> {
 		self.passkeys
 			.values()
 			.filter(|&pk| pk.user_id == user_id)
@@ -83,7 +80,7 @@ impl Webauthn {
 		self.auth_challenges.insert(ch.id, ch.challenge);
 	}
 
-	pub fn consume_auth_challenge(&mut self, id: u64) -> Option<Salt> {
+	pub fn consume_auth_challenge(&mut self, id: Uid) -> Option<Salt> {
 		self.auth_challenges.remove(&id)
 	}
 }
@@ -110,7 +107,7 @@ impl Registration {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AuthChallenge {
-	pub id: u64,
+	pub id: Uid,
 	pub challenge: Salt,
 	pub prf_salt: Option<Salt>,
 }
@@ -124,7 +121,7 @@ pub struct Bundle {
 impl AuthChallenge {
 	pub fn new() -> Self {
 		Self {
-			id: id::generate(),
+			id: Uid::generate(),
 			challenge: Salt::generate(),
 			prf_salt: PRF_SALT.map_or(None, |bytes| {
 				Some(Salt {
@@ -177,7 +174,7 @@ pub struct Credential {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Passkey {
 	pub prf_salt: Salt,
-	pub user_id: u64,
+	pub user_id: Uid,
 	#[serde(
 		serialize_with = "serialize_vec_base64",
 		deserialize_with = "deserialize_vec_base64"

@@ -1,4 +1,4 @@
-use crate::{encrypted::Encrypted, purge::Purge};
+use crate::{encrypted::Encrypted, id::Uid, purge::Purge};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -7,14 +7,14 @@ const ROOT_ID: u64 = 0;
 
 #[derive(PartialEq, Debug)]
 pub enum Error {
-	NotFound(u64),
+	NotFound(Uid),
 	NotAllowed,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct LockedNode {
-	pub id: u64,
-	pub parent_id: u64,
+	pub id: Uid,
+	pub parent_id: Uid,
 	pub content: Encrypted,
 	pub dirty: bool,
 	// pending?
@@ -23,9 +23,9 @@ pub struct LockedNode {
 pub struct Nodes {
 	// keep a hash of the most recent state?
 	// { parent_id, children_ids }
-	branches: HashMap<u64, Vec<u64>>,
+	branches: HashMap<Uid, Vec<Uid>>,
 	// { id, node }
-	nodes: HashMap<u64, LockedNode>,
+	nodes: HashMap<Uid, LockedNode>,
 }
 
 impl Nodes {
@@ -37,7 +37,7 @@ impl Nodes {
 		self.branches.entry(parent).or_default().push(id);
 	}
 
-	pub fn remove(&mut self, id: u64) -> Option<u64> {
+	pub fn remove(&mut self, id: Uid) -> Option<Uid> {
 		if let Some(node) = self.nodes.remove(&id) {
 			if let Some(parent) = self.branches.get_mut(&node.parent_id) {
 				parent.retain(|eid| *eid != id);
@@ -59,7 +59,7 @@ impl Nodes {
 		self.nodes.values().cloned().collect()
 	}
 
-	pub fn move_to(&mut self, id: u64, new_parent: u64) -> Result<(), Error> {
+	pub fn move_to(&mut self, id: Uid, new_parent: Uid) -> Result<(), Error> {
 		// only one root is allowed
 		if new_parent == NO_PARENT_ID {
 			return Err(Error::NotAllowed);
@@ -67,7 +67,7 @@ impl Nodes {
 
 		let mut current = new_parent;
 		// check to the top most node of the hierarchy: we always have a root whose parent is NO_PARENT_ID
-		while current != NO_PARENT_ID {
+		while current != Uid::new(NO_PARENT_ID) {
 			if current == id {
 				return Err(Error::NotAllowed);
 			}
@@ -129,13 +129,16 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.move_to(0, 0), Err(Error::NotAllowed));
+		assert_eq!(
+			storage.move_to(Uid::new(0), Uid::new(0)),
+			Err(Error::NotAllowed)
+		);
 	}
 
 	#[test]
@@ -143,19 +146,22 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.move_to(1, 0), Err(Error::NotAllowed));
+		assert_eq!(
+			storage.move_to(Uid::new(1), Uid::new(0)),
+			Err(Error::NotAllowed)
+		);
 	}
 
 	#[test]
@@ -163,19 +169,22 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.move_to(1, 999), Err(Error::NotFound(999)));
+		assert_eq!(
+			storage.move_to(Uid::new(1), Uid::new(999)),
+			Err(Error::NotFound(Uid::new(999)))
+		);
 	}
 
 	#[test]
@@ -183,13 +192,16 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.move_to(999, 0), Err(Error::NotFound(999)));
+		assert_eq!(
+			storage.move_to(Uid::new(999), Uid::new(0)),
+			Err(Error::NotFound(Uid::new(999)))
+		);
 	}
 
 	#[test]
@@ -197,27 +209,27 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
 		storage.add(LockedNode {
-			id: 2,
-			parent_id: 1,
+			id: Uid::new(2),
+			parent_id: Uid::new(1),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.move_to(2, 0), Ok(()));
+		assert_eq!(storage.move_to(Uid::new(2), Uid::new(0)), Ok(()));
 	}
 
 	#[test]
@@ -225,20 +237,26 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.move_to(0, NO_PARENT_ID), Err(Error::NotAllowed));
-		assert_eq!(storage.move_to(1, NO_PARENT_ID), Err(Error::NotAllowed));
+		assert_eq!(
+			storage.move_to(Uid::new(0), Uid::new(NO_PARENT_ID)),
+			Err(Error::NotAllowed)
+		);
+		assert_eq!(
+			storage.move_to(Uid::new(1), Uid::new(NO_PARENT_ID)),
+			Err(Error::NotAllowed)
+		);
 	}
 
 	#[test]
@@ -246,35 +264,50 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 2,
-			parent_id: 1,
+			id: Uid::new(2),
+			parent_id: Uid::new(1),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 3,
-			parent_id: 2,
+			id: Uid::new(3),
+			parent_id: Uid::new(2),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.move_to(0, 1), Err(Error::NotAllowed));
-		assert_eq!(storage.move_to(0, 2), Err(Error::NotAllowed));
-		assert_eq!(storage.move_to(0, 3), Err(Error::NotAllowed));
-		assert_eq!(storage.move_to(1, 2), Err(Error::NotAllowed));
-		assert_eq!(storage.move_to(1, 3), Err(Error::NotAllowed));
+		assert_eq!(
+			storage.move_to(Uid::new(0), Uid::new(1)),
+			Err(Error::NotAllowed)
+		);
+		assert_eq!(
+			storage.move_to(Uid::new(0), Uid::new(2)),
+			Err(Error::NotAllowed)
+		);
+		assert_eq!(
+			storage.move_to(Uid::new(0), Uid::new(3)),
+			Err(Error::NotAllowed)
+		);
+		assert_eq!(
+			storage.move_to(Uid::new(1), Uid::new(2)),
+			Err(Error::NotAllowed)
+		);
+		assert_eq!(
+			storage.move_to(Uid::new(1), Uid::new(3)),
+			Err(Error::NotAllowed)
+		);
 	}
 
 	#[test]
@@ -282,26 +315,26 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 2,
-			parent_id: 0,
+			id: Uid::new(2),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 3,
-			parent_id: 1,
+			id: Uid::new(3),
+			parent_id: Uid::new(1),
 			content: stub_encrypted(),
 			dirty: false,
 		});
@@ -310,14 +343,14 @@ mod tests {
 		//  1
 		//   3
 		//  2
-		assert_eq!(storage.move_to(3, 2), Ok(()));
-		assert_eq!(storage.move_to(3, 1), Ok(()));
-		assert_eq!(storage.move_to(2, 3), Ok(()));
-		assert_eq!(storage.move_to(2, 1), Ok(()));
-		assert_eq!(storage.move_to(3, 0), Ok(()));
-		assert_eq!(storage.move_to(2, 0), Ok(()));
+		assert_eq!(storage.move_to(Uid::new(3), Uid::new(2)), Ok(()));
+		assert_eq!(storage.move_to(Uid::new(3), Uid::new(1)), Ok(()));
+		assert_eq!(storage.move_to(Uid::new(2), Uid::new(3)), Ok(()));
+		assert_eq!(storage.move_to(Uid::new(2), Uid::new(1)), Ok(()));
+		assert_eq!(storage.move_to(Uid::new(3), Uid::new(0)), Ok(()));
+		assert_eq!(storage.move_to(Uid::new(2), Uid::new(0)), Ok(()));
 
-		assert_eq!(storage.branches.get(&0).unwrap().len(), 3);
+		assert_eq!(storage.branches.get(&Uid::new(0)).unwrap().len(), 3);
 	}
 
 	#[test]
@@ -325,15 +358,15 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.nodes.contains_key(&0), true);
-		storage.remove(0);
-		assert_eq!(storage.nodes.contains_key(&0), false);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
+		storage.remove(Uid::new(0));
+		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), false);
 	}
 
 	#[test]
@@ -341,33 +374,33 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 2,
-			parent_id: 0,
+			id: Uid::new(2),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.nodes.contains_key(&0), true);
-		assert_eq!(storage.nodes.contains_key(&1), true);
-		assert_eq!(storage.nodes.contains_key(&2), true);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), true);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(2)), true);
 
-		storage.remove(0);
+		storage.remove(Uid::new(0));
 
-		assert_eq!(storage.nodes.contains_key(&0), false);
-		assert_eq!(storage.nodes.contains_key(&1), false);
-		assert_eq!(storage.nodes.contains_key(&2), false);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), false);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), false);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(2)), false);
 	}
 
 	#[test]
@@ -375,15 +408,15 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.nodes.contains_key(&0), true);
-		storage.remove(999); // Trying to remove a non-existent node
-		assert_eq!(storage.nodes.contains_key(&0), true);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
+		storage.remove(Uid::new(999)); // Trying to remove a non-existent node
+		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
 	}
 
 	#[test]
@@ -391,25 +424,25 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.nodes.contains_key(&0), true);
-		assert_eq!(storage.nodes.contains_key(&1), true);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), true);
 
-		storage.remove(0);
+		storage.remove(Uid::new(0));
 
-		assert_eq!(storage.nodes.contains_key(&0), false);
-		assert_eq!(storage.nodes.contains_key(&1), false);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), false);
+		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), false);
 	}
 
 	#[test]
@@ -417,21 +450,21 @@ mod tests {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
-			id: 0,
-			parent_id: NO_PARENT_ID,
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 		storage.add(LockedNode {
-			id: 1,
-			parent_id: 0,
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
 			content: stub_encrypted(),
 			dirty: false,
 		});
 
-		assert_eq!(storage.nodes.contains_key(&1), true);
-		storage.remove(1);
-		assert_eq!(storage.nodes.contains_key(&1), false);
-		assert!(storage.branches.get(&0).unwrap().is_empty());
+		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), true);
+		storage.remove(Uid::new(1));
+		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), false);
+		assert!(storage.branches.get(&Uid::new(0)).unwrap().is_empty());
 	}
 }

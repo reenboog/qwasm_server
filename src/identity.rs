@@ -3,13 +3,14 @@ use serde::{Deserialize, Serialize};
 use crate::{
 	base64_blobs::{deserialize_vec_base64, serialize_vec_base64},
 	ed448::PublicKeyEd448,
+	id::Uid,
 	x448::PublicKeyX448,
 };
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Public {
 	// created by by the inviting party (unless god)
-	pub id: u64,
+	pub id: Uid,
 	// can be used to encrypt messages to or verify signatures against
 	pub x448: PublicKeyX448,
 	pub ed448: PublicKeyEd448,
@@ -28,7 +29,7 @@ pub struct Encrypted {
 }
 
 impl Public {
-	pub fn id(&self) -> u64 {
+	pub fn id(&self) -> Uid {
 		// id::from_bytes(&[self.x448.as_bytes(), self.ed448.as_bytes().as_slice()].concat())
 		self.id
 	}
