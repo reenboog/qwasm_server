@@ -4,9 +4,10 @@ services:
     build:
       context: .
       dockerfile: ./Dockerfile
+    image: reenboog/uploader:latest
     volumes:
     - ./uploads:/uploads
     ports:
-      - 5050:3000
+      - ${PORT:-5050}:3000
     environment:
-      - USE_TLS=${USE_TLS}
+      - USE_TLS=${USE_TLS:-true}

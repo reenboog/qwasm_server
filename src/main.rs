@@ -636,19 +636,29 @@ async fn main() {
 	let use_tls = env::var("USE_TLS").unwrap_or_else(|_| "false".into()) == "true";
 	let router = router(state);
 
+	println!("starting...");
+
 	if use_tls {
+		println!("using tls");
+
+		let domain = env::var("DOMAIN").unwrap();
+		let base_dir = PathBuf::from("/etc/letsencrypt/live/").join(&domain);
 		let config = RustlsConfig::from_pem_file(
-			PathBuf::from("certs").join("cert.pem"),
-			PathBuf::from("certs").join("key.pem"),
+			base_dir.join("fullchain.pem"),
+			base_dir.join("privkey.pem"),
 		)
 		.await
 		.unwrap();
 
+		println!("certs found...");
+		
 		axum_server::bind_rustls(addr, config)
 			.serve(router.into_make_service())
 			.await
 			.unwrap();
 	} else {
+		println!("not using tls");
+
 		Server::bind(addr)
 			.serve(router.into_make_service())
 			.await
