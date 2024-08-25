@@ -1,6 +1,5 @@
 mod aes_gcm;
 mod base64_blobs;
-mod content_range;
 mod ed448;
 mod encrypted;
 mod id;
@@ -10,6 +9,7 @@ mod lock;
 mod nodes;
 mod public_key;
 mod purge;
+mod s3;
 mod salt;
 mod sessions;
 mod shares;
@@ -18,35 +18,38 @@ mod webauthn;
 mod x448;
 
 use crate::purge::Purge;
+use aws_sdk_s3::{
+	config::{BehaviorVersion, Credentials, Region},
+	presigning::PresigningConfig,
+	types::{CompletedMultipartUpload, CompletedPart},
+	Client, Config,
+};
 use axum::{
-	body::{Body, BodyDataStream},
-	extract::{self, Path, Request},
-	http::{HeaderMap, HeaderValue, Response as HttpResponse, StatusCode},
+	extract::{self, Path},
+	http::StatusCode,
 	response::{IntoResponse, Response},
-	routing::{delete, get, head, post},
-	Json, Router,
+	routing::{delete, get, post},
+	Json,
+	Router,
 };
 use axum_server::{tls_rustls::RustlsConfig, Server};
-use content_range::{ContentRange, Range};
-use futures_util::StreamExt;
+
 use id::Uid;
 use nodes::LockedNode;
 use nodes::Nodes;
+use s3::Uploads;
 use sessions::Sessions;
 use shares::{Invite, Shares, Welcome};
-use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::{fs::OpenOptions, sync::Mutex};
+use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
+use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use users::{LockedUser, Login, Signup, Users};
 use webauthn::Webauthn;
 
-// Define a custom error type that can convert into an HTTP response
 #[derive(Debug)]
 enum Error {
 	Io(String),
 	Unauthorised,
-	InvalidRange,
 	NotFound(Uid),
 	NoInvite(String),
 }
@@ -74,7 +77,6 @@ impl IntoResponse for Error {
 		match self {
 			Error::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
 			Error::Unauthorised => StatusCode::FORBIDDEN,
-			Error::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
 			Error::NotFound(_) => StatusCode::NOT_FOUND,
 			Error::NoInvite(_) => StatusCode::NOT_FOUND,
 		}
@@ -89,16 +91,24 @@ struct State {
 	users: Arc<Mutex<Users>>,
 	sessions: Arc<Mutex<Sessions>>,
 	webauthn: Arc<Mutex<Webauthn>>,
+
+	s3_client: Arc<Mutex<Client>>,
+	s3_bucket: String,
+
+	uploads: Arc<Mutex<Uploads>>,
 }
 
 impl State {
-	fn new() -> Self {
+	fn new(s3_config: Config, s3_bucket: &str) -> Self {
 		Self {
 			nodes: Arc::new(Mutex::new(Nodes::new())),
 			shares: Arc::new(Mutex::new(Shares::new())),
 			users: Arc::new(Mutex::new(Users::new())),
 			sessions: Arc::new(Mutex::new(Sessions::new())),
 			webauthn: Arc::new(Mutex::new(Webauthn::new())),
+			s3_client: Arc::new(Mutex::new(Client::from_conf(s3_config))),
+			s3_bucket: s3_bucket.to_string(),
+			uploads: Arc::new(Mutex::new(Uploads::new())),
 		}
 	}
 
@@ -117,6 +127,9 @@ impl State {
 		}
 		{
 			self.webauthn.lock().await.purge();
+		}
+		{
+			self.uploads.lock().await.purge();
 		}
 	}
 
@@ -155,160 +168,179 @@ impl State {
 	}
 }
 
-async fn open_file_at_offset(
-	file_id: Uid,
-	create: bool,
-	append: bool,
-	read: bool,
-	write: bool,
-	offset: u64,
-) -> Result<tokio::fs::File, Error> {
-	let path = path_for_file_id(file_id);
-
-	println!("path to process: {}", path);
-
-	let mut file = OpenOptions::new()
-		.create(create)
-		.append(append)
-		.read(read)
-		.write(write)
-		.open(path)
+async fn get_upload_status(
+	extract::State(state): extract::State<State>,
+	Path(file_id): Path<Uid>,
+) -> Result<(StatusCode, Json<s3::UploadInfo>), Error> {
+	let upload = state
+		.uploads
+		.lock()
 		.await
-		.map_err(|e| Error::from(e))?;
+		.get(file_id)
+		.ok_or(Error::NotFound(file_id))?
+		.clone();
+	let client = &state.s3_client.lock().await;
+	let status = if upload.complete {
+		let presigning_config = PresigningConfig::builder()
+			.expires_in(std::time::Duration::from_secs(10 * 60))
+			.build()
+			.map_err(|e| Error::Io(e.to_string()))?;
+		let res = client
+			.get_object()
+			.bucket(state.s3_bucket.clone())
+			.key(file_id.to_base64())
+			.presigned(presigning_config)
+			.await
+			.map_err(|e| Error::Io(e.to_string()))?;
+		let content_length = client
+			.head_object()
+			.bucket(state.s3_bucket)
+			.key(file_id.to_base64())
+			.send()
+			.await
+			.map_err(|e| Error::Io(e.to_string()))?
+			.content_length()
+			.unwrap_or(0);
 
-	file.seek(tokio::io::SeekFrom::Start(offset)).await?;
+		println!(
+			"upload complete, url: {}, content_length: {}",
+			res.uri().to_string(),
+			content_length
+		);
 
-	Ok(file)
-}
-
-async fn check_auth(headers: &HeaderMap) -> Result<(), Error> {
-	if headers
-		.get("x-uploader-auth")
-		.eq(&Some(&HeaderValue::from_bytes(b"aabb1122").unwrap()))
-	{
-		Ok(())
+		s3::UploadStatus::Ready {
+			url: res.uri().to_string(),
+			content_length,
+		}
 	} else {
-		Err(Error::Unauthorised)
-	}
+		let parts = client
+			.list_parts()
+			.bucket(state.s3_bucket)
+			.key(file_id.to_base64())
+			.upload_id(upload.upload_id.clone())
+			.send()
+			.await
+			.map_err(|e| Error::Io(e.to_string()))?;
+
+		println!("upload incomplete, parts: {:?}", parts);
+
+		s3::UploadStatus::Pending {
+			parts: parts
+				.parts()
+				.into_iter()
+				.map(|p| p.clone().into())
+				.collect(),
+		}
+	};
+
+	let info = s3::UploadInfo {
+		status,
+		enc_alg: upload.enc_alg,
+		chunk_size: upload.chunk_size,
+	};
+
+	Ok((StatusCode::OK, Json(info)))
 }
 
-async fn process_data_stream(
-	file_id: Uid,
-	mut file: tokio::fs::File,
-	mut stream: BodyDataStream,
+async fn start_upload(
+	extract::State(state): extract::State<State>,
+	Path(file_id): Path<Uid>,
+	extract::Json(req): extract::Json<s3::NewUploadReq>,
+) -> Result<(StatusCode, Json<s3::NewUploadRes>), Error> {
+	println!(
+		"starting upload: {}; size: {}",
+		file_id.to_base64(),
+		req.file_size
+	);
+
+	let file_name = file_id.to_base64();
+	let bucket = state.s3_bucket;
+	let plan = s3::partition_file(req.file_size);
+	let client = &state.s3_client.lock().await;
+	let upload_id = s3::s3_gen_upload_id(client, &bucket, &file_name)
+		.await
+		.map_err(|e| {
+			println!("error generating upload id: {}", e.to_string());
+			Error::Io(e.to_string())
+})?;
+
+	println!("upload id: {}", upload_id);
+	println!("partitions plan: {:?}", plan);
+
+	let presigned_urls =
+		s3::s3_gen_presigned_urls(client, &bucket, &file_name, &upload_id, plan.num_chunks)
+			.await
+			.map_err(|e| Error::Io(e.to_string()))?;
+
+	println!("presigned urls: {:?}", presigned_urls);
+
+	let enc_alg = state
+		.uploads
+		.lock()
+		.await
+		.add(file_id, upload_id.clone(), plan.chunk_size);
+
+	let new_upload = s3::NewUploadRes {
+		id: upload_id,
+		chunk_urls: presigned_urls,
+		chunk_size: plan.chunk_size,
+		enc_alg,
+	};
+
+	Ok((StatusCode::CREATED, Json(new_upload)))
+}
+
+async fn finish_upload(
+	extract::State(state): extract::State<State>,
+	Path(file_id): Path<Uid>,
+	extract::Json(payload): extract::Json<s3::FinishUpload>,
 ) -> Result<StatusCode, Error> {
-	println!("auth passed, working...");
+	let file_name = file_id.to_base64();
+	let client = &state.s3_client.lock().await;
+	let bucket = &state.s3_bucket;
+	let mut parts: Vec<CompletedPart> = payload.parts.into_iter().map(|p| p.into()).collect();
+	parts.sort_by_key(|part| part.part_number);
 
-	while let Some(chunk) = stream.next().await {
-		let data = chunk?;
+	let completed_upload = CompletedMultipartUpload::builder()
+		.set_parts(Some(parts))
+		.build();
 
-		file.write_all(&data).await?;
-		println!("{}: chunk size - {}", file_id.to_base64(), data.len());
-	}
+	println!(
+		"completing upload: {}; upload_id: {}",
+		file_id.to_base64(),
+		payload.upload_id
+	);
+
+	client
+		.complete_multipart_upload()
+		.bucket(bucket)
+		.key(&file_name)
+		.upload_id(&payload.upload_id)
+		.multipart_upload(completed_upload)
+		.send()
+		.await
+		.map_err(|e| {
+			println!("error completing upload: {}", e.to_string());
+			Error::Io(e.to_string())
+		})?;
+
+	state.uploads.lock().await.mark_as_complete(file_id);
+
+	println!("upload completed: {}", file_id.to_base64());
 
 	Ok(StatusCode::OK)
 }
 
-async fn handle_upload(
-	file_id: Uid,
-	request: Request<Body>,
-	append: bool,
-) -> Result<StatusCode, Error> {
-	check_auth(&request.headers()).await?;
-
-	let range = request
-		.headers()
-		.get("Content-Range")
-		.and_then(|header| header.to_str().ok())
-		.and_then(|header_str| ContentRange::from_str(header_str).ok())
-		.ok_or(Error::InvalidRange)?;
-
-	println!("received: {}", range.to_string());
-
-	let file = open_file_at_offset(file_id, true, append, false, true, range.start).await?;
-	let stream = request.into_body().into_data_stream();
-
-	process_data_stream(file_id, file, stream).await
-}
-
-async fn upload_stream(
-	Path(file_id): Path<Uid>,
-	request: Request<Body>,
-) -> Result<StatusCode, Error> {
-	handle_upload(file_id, request, false).await
-}
-
-async fn upload_ranged(
-	Path(file_id): Path<Uid>,
-	request: Request<Body>,
-) -> Result<StatusCode, Error> {
-	handle_upload(file_id, request, false).await
-}
-
-async fn read_file_chunk(file_id: Uid, start: u64, end: u64) -> Result<Vec<u8>, Error> {
-	let mut file = open_file_at_offset(file_id, false, false, true, false, start).await?;
-	let mut buffer = vec![0; (end - start + 1) as usize];
-
-	file.read_exact(&mut buffer).await?;
-
-	Ok(buffer)
-}
-
-async fn download_ranged(
-	Path(file_id): Path<Uid>,
-	request: Request<Body>,
-) -> Result<Response<Body>, Error> {
-	check_auth(&request.headers()).await?;
-
-	let range = request
-		.headers()
-		.get("Range")
-		.and_then(|header| header.to_str().ok())
-		.and_then(|header_str| Range::from_str(header_str).ok())
-		.ok_or(Error::InvalidRange)?;
-
-	let chunk = read_file_chunk(file_id, range.start, range.end).await?;
-
-	let response = Response::builder()
-		.status(StatusCode::PARTIAL_CONTENT)
-		.header(
-			"Content-Range",
-			ContentRange {
-				start: range.start,
-				end: range.end,
-				length: Some(chunk.len() as u64),
-			}
-			.to_string(),
-		)
-		.header("Content-Length", chunk.len())
-		.body(Body::from(chunk))
-		.unwrap();
-
-	Ok(response)
-}
-
-async fn file_length(file_path: String) -> Option<usize> {
-	// FIXME: check auth token
-	if let Ok(file) = OpenOptions::new().read(true).open(file_path).await {
-		if let Ok(metadata) = file.metadata().await {
-			return Some(metadata.len() as usize);
-		}
-	}
-	None
-}
-
-async fn check_file_length(Path(file_id): Path<Uid>) -> Result<HttpResponse<Body>, Error> {
-	let file_path = format!("uploads/{}", file_id.to_base64());
-
-	match file_length(file_path).await {
-		Some(length) => Ok(Response::builder()
-			.status(StatusCode::OK)
-			.header("Content-Length", length.to_string())
-			.body(Body::empty())
-			.unwrap()),
-		None => Err(Error::Io("File not found".to_string())),
-	}
-}
+// async fn check_auth(headers: &HeaderMap) -> Result<(), Error> {
+// 	if headers
+// 		.get("x-uploader-auth")
+// 		.eq(&Some(&HeaderValue::from_bytes(b"aabb1122").unwrap()))
+// 	{
+// 		Ok(())
+// 	} else {
+// 		Err(Error::Unauthorised)
+// 	}
+// }
 
 async fn add_nodes(
 	extract::State(state): extract::State<State>,
@@ -632,11 +664,20 @@ async fn main() {
 	clear_uploads_dir().await;
 
 	let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-	let state = State::new();
 	let use_tls = env::var("USE_TLS").unwrap_or_else(|_| "false".into()) == "true";
+	let s3_ak_id = env::var("S3_AK_ID").expect("S3_AK_ID not set");
+	let s3_ak = env::var("S3_AK_SECRET").expect("S3_AK_SECRET not set");
+	let s3_bucket = env::var("S3_BUCKET").expect("S3_BUCKET not set");
+	let s3_region = env::var("S3_REGION").expect("S3_REGION not set");
+	let state = State::new(s3_config(&s3_ak_id, &s3_ak, &s3_region, false), &s3_bucket);
 	let router = router(state);
 
 	println!("starting...");
+
+	println!("s3_ak_id: {}", s3_ak_id);
+	println!("s3_ak: {}", s3_ak);
+	println!("s3_bucket: {}", s3_bucket);
+	println!("s3_region: {}", s3_region);
 
 	if use_tls {
 		println!("using tls");
@@ -651,7 +692,7 @@ async fn main() {
 		.unwrap();
 
 		println!("certs found...");
-		
+
 		axum_server::bind_rustls(addr, config)
 			.serve(router.into_make_service())
 			.await
@@ -666,14 +707,21 @@ async fn main() {
 	}
 }
 
+fn s3_config(ak_id: &str, ak_secret: &str, region: &str, accelerate: bool) -> Config {
+	Config::builder()
+		.region(Region::new(region.to_string()))
+		.accelerate(accelerate)
+		.credentials_provider(Credentials::new(ak_id, ak_secret, None, None, "static"))
+		.behavior_version(BehaviorVersion::latest())
+		.build()
+}
+
 #[allow(dead_code)]
 fn router(state: State) -> Router {
 	Router::new()
-		.route("/uploads/stream/:file_id", post(upload_stream))
-		.route("/uploads/chunk/:file_id", post(upload_ranged))
-		.route("/uploads/chunk/:file_id", get(download_ranged))
-		// TODO: /uploads/finish/:file_id/
-		.route("/uploads/:file_id", head(check_file_length))
+		.route("/uploads/info/:file_id", get(get_upload_status))
+		.route("/uploads/start/:file_id", post(start_upload))
+		.route("/uploads/finish/:file_id", post(finish_upload))
 		.route("/nodes", post(add_nodes))
 		.route("/nodes/:file_id", delete(delete_node))
 		.route("/nodes", get(get_all))

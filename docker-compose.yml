@@ -5,9 +5,11 @@ services:
       context: .
       dockerfile: ./Dockerfile
     image: reenboog/uploader:latest
-    volumes:
-    - ./uploads:/uploads
     ports:
       - ${PORT:-5050}:3000
     environment:
       - USE_TLS=${USE_TLS:-true}
+      - S3_AK_ID=${S3_AK_ID}
+      - S3_AK_SECRET=${S3_AK_SECRET}
+      - S3_BUCKET=${S3_BUCKET}
+      - S3_REGION=${S3_REGION}
