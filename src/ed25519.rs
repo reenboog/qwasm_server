@@ -4,7 +4,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-const SIG_SIZE: usize = 114;
+const SIG_SIZE: usize = 64;
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Signature {
@@ -20,7 +20,7 @@ impl Signature {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct KeyTypeEd448;
+pub struct KeyTypeEd25519;
 
-const PUB_KEY_SIZE: usize = 57;
-pub type PublicKeyEd448 = PublicKey<KeyTypeEd448, { PUB_KEY_SIZE }>;
+const PUB_KEY_SIZE: usize = 32;
+pub type PublicKeyEd25519 = PublicKey<KeyTypeEd25519, { PUB_KEY_SIZE }>;

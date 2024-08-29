@@ -99,7 +99,7 @@ impl Purge for Uploads {
 			uploads: HashMap::new(),
 		}
 	}
-	
+
 	fn purge(&mut self) {
 		self.uploads.clear();
 	}

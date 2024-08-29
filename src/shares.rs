@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
 	base64_blobs::{deserialize_array_base64, serialize_array_base64},
-	ed448,
+	ed25519,
 	id::Uid,
 	identity, lock,
 	nodes::LockedNode,
@@ -39,7 +39,7 @@ pub struct LockedShare {
 	// encrypted content of the sahre
 	pub payload: identity::Encrypted,
 	// sign({ sender, exports })
-	pub sig: ed448::Signature,
+	pub sig: ed25519::Signature,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -49,7 +49,7 @@ pub struct Invite {
 	pub(crate) email: String,
 	pub(crate) payload: lock::Lock,
 	pub(crate) export: Export,
-	pub(crate) sig: ed448::Signature,
+	pub(crate) sig: ed25519::Signature,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,7 +58,7 @@ pub struct Welcome {
 	pub(crate) sender: identity::Public,
 	pub(crate) imports: lock::Lock,
 	// = Invite::sig
-	pub(crate) sig: ed448::Signature,
+	pub(crate) sig: ed25519::Signature,
 	// TODO: get_nodes(invite.export.fs.ids)
 	pub(crate) nodes: Vec<LockedNode>,
 }

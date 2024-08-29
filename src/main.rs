@@ -1,6 +1,6 @@
 mod aes_gcm;
 mod base64_blobs;
-mod ed448;
+mod ed25519;
 mod encrypted;
 mod id;
 mod identity;
@@ -29,8 +29,7 @@ use axum::{
 	http::StatusCode,
 	response::{IntoResponse, Response},
 	routing::{delete, get, post},
-	Json,
-	Router,
+	Json, Router,
 };
 use axum_server::{tls_rustls::RustlsConfig, Server};
 
@@ -262,7 +261,7 @@ async fn start_upload(
 		.map_err(|e| {
 			println!("error generating upload id: {}", e.to_string());
 			Error::Io(e.to_string())
-})?;
+		})?;
 
 	println!("upload id: {}", upload_id);
 	println!("partitions plan: {:?}", plan);
