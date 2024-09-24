@@ -7,6 +7,7 @@ use crate::{
 	identity, lock,
 	nodes::LockedNode,
 	purge::Purge,
+	users, x448,
 };
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +53,34 @@ pub struct Invite {
 	pub(crate) sig: ed25519::Signature,
 }
 
+#[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
+pub enum Index {
+	Table { table: String },
+	Column { table: String, column: String },
+}
+
+// a pin-less invite intent that should be later acknowledged
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct InviteIntent {
+	pub(crate) email: String,
+	pub(crate) sender: identity::Public,
+	// sign(email + user_id + sender.id)
+	pub(crate) sig: ed25519::Signature,
+	pub(crate) user_id: Uid,
+	// receiver's pk which the sender is to use to finally encrypt the previously selected seeds
+	pub(crate) receiver: Option<identity::Public>,
+	// None means `root`
+	// do I need these at all?
+	pub(crate) fs_ids: Option<Vec<Uid>>,
+	pub(crate) db_ids: Option<Vec<Index>>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FinishInviteIntent {
+	pub(crate) email: String,
+	pub(crate) share: LockedShare,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Welcome {
 	pub(crate) user_id: Uid,
@@ -66,6 +95,7 @@ pub struct Welcome {
 pub struct Shares {
 	pub shares: Vec<LockedShare>,
 	pub invites: HashMap<String, Invite>,
+	pub intents: HashMap<String, InviteIntent>,
 }
 
 impl Shares {
@@ -85,6 +115,40 @@ impl Shares {
 		self.invites.insert(invite.email.to_string(), invite);
 	}
 
+	pub fn add_invite_intent(&mut self, intent: InviteIntent) {
+		self.intents.insert(intent.email.to_string(), intent);
+	}
+
+	pub fn get_invite_intent(&self, email: &str) -> Option<&InviteIntent> {
+		self.intents.get(email)
+	}
+
+	pub fn get_invite_intents_for_sender(&self, sender: Uid) -> Vec<InviteIntent> {
+		self.intents
+			.values()
+			.filter(|int| int.sender.id() == sender)
+			.cloned()
+			.collect()
+	}
+
+	pub fn delete_invite_intent(&mut self, email: &str) -> Option<InviteIntent> {
+		self.intents.remove(email)
+	}
+
+	pub fn ack_invite_intent(&mut self, email: &str, pk: identity::Public) -> bool {
+		if let Some(intent) = self.intents.get_mut(email) {
+			if intent.receiver.is_none() {
+				// no need to ack more than once
+				intent.receiver = Some(pk);
+				true
+			} else {
+				false
+			}
+		} else {
+			false
+		}
+	}
+
 	pub fn invie_for_mail(&self, email: &str) -> Option<&Invite> {
 		self.invites.get(email)
 	}
@@ -99,6 +163,7 @@ impl Purge for Shares {
 		Self {
 			shares: Vec::new(),
 			invites: HashMap::new(),
+			intents: HashMap::new(),
 		}
 	}
 }

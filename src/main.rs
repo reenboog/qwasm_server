@@ -38,7 +38,7 @@ use nodes::LockedNode;
 use nodes::Nodes;
 use s3::Uploads;
 use sessions::Sessions;
-use shares::{Invite, Shares, Welcome};
+use shares::{Invite, InviteIntent, Shares, Welcome};
 use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
@@ -154,6 +154,7 @@ impl State {
 
 		let _priv = users.priv_for_id(id).ok_or(Error::Unauthorised)?;
 		let _pub = users.pub_for_id(id).ok_or(Error::Unauthorised)?;
+		let invite_intents = shares.get_invite_intents_for_sender(id);
 		let shares = shares.all_shares_for_user(id);
 		// FIXME: return nodes based on exports and pending uploads (if uploader == users.id_for_email(email))
 		let roots = nodes.get_all();
@@ -163,6 +164,7 @@ impl State {
 			_pub: _pub.clone(),
 			shares,
 			roots,
+			pending_invite_intents: invite_intents,
 		})
 	}
 }
@@ -366,6 +368,12 @@ async fn signup(
 	let user = signup.user;
 	let user_id = user._pub.id();
 
+	println!(
+		"ack invite intent for: {}; res: {}",
+		signup.email,
+		shares.ack_invite_intent(&signup.email, user._pub.clone())
+	);
+
 	user.roots.iter().for_each(|node| {
 		nodes.add(node.clone());
 	});
@@ -476,6 +484,67 @@ async fn invite(
 	shares.add_invite(invite);
 
 	Ok(StatusCode::CREATED)
+}
+
+async fn start_invite_intent(
+	extract::State(state): extract::State<State>,
+	extract::Json(intent): extract::Json<InviteIntent>,
+) -> Result<StatusCode, Error> {
+	let mut shares = state.shares.lock().await;
+	let email = intent.email.clone();
+
+	println!("start invite intent: {}", email);
+
+	shares.add_invite_intent(intent);
+
+	println!("added intent");
+
+	Ok(StatusCode::CREATED)
+}
+
+async fn get_invite_intent(
+	extract::State(state): extract::State<State>,
+	Path(email_base64): Path<String>,
+) -> Result<(StatusCode, Json<InviteIntent>), Error> {
+	let email = String::from_utf8(
+		base64::decode_config(&email_base64, base64::URL_SAFE)
+			.map_err(|_| Error::NoInvite(email_base64.clone()))?,
+	)
+	.map_err(|_| Error::NoInvite(email_base64.clone()))?;
+
+	let shares = state.shares.lock().await;
+	println!("getting intent for: {}", email);
+
+	if let Some(intent) = shares.get_invite_intent(&email) {
+		println!("--intent for: {}; res: {:?}", email, intent,);
+
+		Ok((StatusCode::OK, Json(intent.clone())))
+	} else {
+		Err(Error::NoInvite(email.to_string()))
+	}
+}
+
+async fn finish_invite_intents_if_any(
+	extract::State(state): extract::State<State>,
+	extract::Json(intents): extract::Json<Vec<shares::FinishInviteIntent>>,
+) -> Result<StatusCode, Error> {
+	let mut shares = state.shares.lock().await;
+
+	println!("finish invite intent");
+
+	intents.iter().for_each(|int| {
+		shares.add_share(int.share.clone());
+
+		let email = &int.email;
+
+		println!(
+			"--intent: {}; res: {:?}",
+			email,
+			shares.delete_invite_intent(email)
+		);
+	});
+
+	Ok(StatusCode::OK)
 }
 
 async fn lock_session(
@@ -739,8 +808,12 @@ fn router(state: State) -> Router {
 			delete(delete_passkey),
 		)
 		.route("/login", post(login))
-		.route("/invite/:email", get(get_invite))
-		.route("/invite", post(invite))
+		.route("/invite/pinned/:email", get(get_invite))
+		.route("/invite/pinned", post(invite))
+		// TODO: an api for share?
+		.route("/invite/intent/start", post(start_invite_intent))
+		.route("/invite/intent/fetch/:email", get(get_invite_intent))
+		.route("/invite/intent/finish/", post(finish_invite_intents_if_any))
 		.route("/webauthn/start-reg/:user_id", post(webauthn_start_reg))
 		.route("/webauthn/finish-reg/:user_id", post(webauthn_finish_reg))
 		.route("/webauthn/start-auth", post(webauthn_start_auth))

@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 
 use crate::{
-	encrypted, id::Uid, identity, lock, nodes::LockedNode, purge::Purge, shares::LockedShare,
+	encrypted,
+	id::Uid,
+	identity, lock,
+	nodes::LockedNode,
+	purge::Purge,
+	shares::{InviteIntent, LockedShare},
 };
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +18,10 @@ pub struct LockedUser {
 	#[serde(rename = "pub")]
 	pub _pub: identity::Public,
 	// exports & imports will be decoded from this; god has empty imports, always
+	// sent, ackend and encrypted shared
 	pub shares: Vec<LockedShare>,
+	// sent and optionally acked shares (could be useful to cancel, if not yet accepted)
+	pub pending_invite_intents: Vec<InviteIntent>,
 	// get_nodes(locked_shares(user_id == share.receiver | user_id == 0 then node_id_root).export.fs.ids + children)
 	// TODO: include a hash of the hierarchy for later checks
 	pub roots: Vec<LockedNode>,
