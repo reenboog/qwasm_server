@@ -5,6 +5,7 @@ mod encrypted;
 mod id;
 mod identity;
 mod key;
+mod kyber;
 mod lock;
 mod nodes;
 mod public_key;
@@ -512,6 +513,7 @@ async fn get_invite_intent(
 	)
 	.map_err(|_| Error::NoInvite(email_base64.clone()))?;
 
+	//
 	let shares = state.shares.lock().await;
 	println!("getting intent for: {}", email);
 
