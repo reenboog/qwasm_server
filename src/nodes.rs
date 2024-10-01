@@ -20,6 +20,7 @@ pub struct LockedNode {
 	// pending?
 }
 
+#[derive(Clone)]
 pub struct Nodes {
 	// keep a hash of the most recent state?
 	// { parent_id, children_ids }
@@ -37,22 +38,36 @@ impl Nodes {
 		self.branches.entry(parent).or_default().push(id);
 	}
 
-	pub fn remove(&mut self, id: Uid) -> Option<Uid> {
+	// returns ids of all the deleted nodes (the deleted one and its direct and indirect children)
+	pub fn delete(&mut self, id: Uid) -> Vec<Uid> {
+		let mut deleted = Vec::new();
+
 		if let Some(node) = self.nodes.remove(&id) {
+			deleted.push(id);
+
 			if let Some(parent) = self.branches.get_mut(&node.parent_id) {
 				parent.retain(|eid| *eid != id);
 			}
 
 			if let Some(children) = self.branches.remove(&id) {
 				for child in children {
-					self.remove(child);
+					deleted.extend(self.delete(child));
 				}
 			}
-
-			Some(id)
-		} else {
-			None
 		}
+
+		deleted
+	}
+
+	// having child ids in the specified list will affect order, but still won't allow duplicates
+	pub fn delete_list(&mut self, ids: &[Uid]) -> Vec<Uid> {
+		use std::collections::HashSet;
+
+		let mut seen = HashSet::new();
+		ids.iter()
+			.flat_map(|id| self.delete(*id))
+			.filter(|uid| seen.insert(*uid))
+			.collect()
 	}
 
 	pub fn get_all(&self) -> Vec<LockedNode> {
@@ -354,7 +369,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_remove_node_no_children() {
+	fn test_delete_node_no_children() {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
@@ -365,12 +380,12 @@ mod tests {
 		});
 
 		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
-		storage.remove(Uid::new(0));
+		storage.delete(Uid::new(0));
 		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), false);
 	}
 
 	#[test]
-	fn test_remove_node_with_children() {
+	fn test_delete_node_with_children() {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
@@ -396,7 +411,7 @@ mod tests {
 		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), true);
 		assert_eq!(storage.nodes.contains_key(&Uid::new(2)), true);
 
-		storage.remove(Uid::new(0));
+		storage.delete(Uid::new(0));
 
 		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), false);
 		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), false);
@@ -404,7 +419,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_remove_non_existent_node() {
+	fn test_delete_non_existent_node() {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
@@ -415,12 +430,12 @@ mod tests {
 		});
 
 		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
-		storage.remove(Uid::new(999)); // Trying to remove a non-existent node
+		storage.delete(Uid::new(999)); // Trying to remove a non-existent node
 		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
 	}
 
 	#[test]
-	fn test_remove_root_node() {
+	fn test_delete_root_node() {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
@@ -439,14 +454,14 @@ mod tests {
 		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), true);
 		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), true);
 
-		storage.remove(Uid::new(0));
+		storage.delete(Uid::new(0));
 
 		assert_eq!(storage.nodes.contains_key(&Uid::new(0)), false);
 		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), false);
 	}
 
 	#[test]
-	fn test_remove_leaf_node() {
+	fn test_delete_leaf_node() {
 		let mut storage = Nodes::new();
 
 		storage.add(LockedNode {
@@ -463,8 +478,390 @@ mod tests {
 		});
 
 		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), true);
-		storage.remove(Uid::new(1));
+		storage.delete(Uid::new(1));
 		assert_eq!(storage.nodes.contains_key(&Uid::new(1)), false);
 		assert!(storage.branches.get(&Uid::new(0)).unwrap().is_empty());
+	}
+
+	#[test]
+	fn test_delete_returns_whole_subtree_in_one_root() {
+		let mut one_root = Nodes::new();
+
+		/*
+
+		0
+			1
+				11
+					111
+				12
+					121
+			2
+				21
+			3
+
+		*/
+
+		// 0
+		one_root.add(LockedNode {
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+
+		// 1
+		one_root.add(LockedNode {
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 11
+		one_root.add(LockedNode {
+			id: Uid::new(11),
+			parent_id: Uid::new(1),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 111
+		one_root.add(LockedNode {
+			id: Uid::new(111),
+			parent_id: Uid::new(11),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 12
+		one_root.add(LockedNode {
+			id: Uid::new(12),
+			parent_id: Uid::new(1),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 121
+		one_root.add(LockedNode {
+			id: Uid::new(121),
+			parent_id: Uid::new(12),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 2
+		one_root.add(LockedNode {
+			id: Uid::new(2),
+			parent_id: Uid::new(0),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 21
+		one_root.add(LockedNode {
+			id: Uid::new(21),
+			parent_id: Uid::new(2),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 3
+		one_root.add(LockedNode {
+			id: Uid::new(3),
+			parent_id: Uid::new(0),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+
+		assert_eq!(
+			one_root.clone().delete(Uid::new(0)),
+			[0, 1, 11, 111, 12, 121, 2, 21, 3]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(1)),
+			[1, 11, 111, 12, 121]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(11)),
+			[11, 111]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(111)),
+			[111]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(12)),
+			[12, 121]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(121)),
+			[121]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(2)),
+			[2, 21]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(21)),
+			[21].into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(3)),
+			[3].into_iter().map(|idx| Uid::new(idx)).collect::<Vec<_>>()
+		);
+		// empty list for a non existing node
+		assert_eq!(
+			one_root.clone().delete(Uid::new(999)),
+			[].into_iter().map(|idx| Uid::new(idx)).collect::<Vec<_>>()
+		);
+	}
+
+	#[test]
+	fn test_delete_returns_whole_subtree_in_when_detached() {
+		let mut one_root = Nodes::new();
+
+		/*
+
+		0?
+			1?
+				11
+					111
+				12
+					121
+			2
+				21
+			3
+
+		*/
+
+		// 11, orphant
+		one_root.add(LockedNode {
+			id: Uid::new(11),
+			parent_id: Uid::new(1),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 111
+		one_root.add(LockedNode {
+			id: Uid::new(111),
+			parent_id: Uid::new(11),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 12, orphant
+		one_root.add(LockedNode {
+			id: Uid::new(12),
+			parent_id: Uid::new(1),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 121
+		one_root.add(LockedNode {
+			id: Uid::new(121),
+			parent_id: Uid::new(12),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 2, orphant
+		one_root.add(LockedNode {
+			id: Uid::new(2),
+			parent_id: Uid::new(0),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 21
+		one_root.add(LockedNode {
+			id: Uid::new(21),
+			parent_id: Uid::new(2),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 3, orphant
+		one_root.add(LockedNode {
+			id: Uid::new(3),
+			parent_id: Uid::new(0),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+
+		assert_eq!(
+			one_root.clone().delete(Uid::new(11)),
+			[11, 111]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(111)),
+			[111]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(12)),
+			[12, 121]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(121)),
+			[121]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(2)),
+			[2, 21]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(21)),
+			[21].into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(3)),
+			[3].into_iter().map(|idx| Uid::new(idx)).collect::<Vec<_>>()
+		);
+		// empty list for a non existing node
+		assert_eq!(
+			one_root.clone().delete(Uid::new(0)),
+			[].into_iter().map(|idx| Uid::new(idx)).collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(1)),
+			[].into_iter().map(|idx| Uid::new(idx)).collect::<Vec<_>>()
+		);
+		assert_eq!(
+			one_root.clone().delete(Uid::new(999)),
+			[].into_iter().map(|idx| Uid::new(idx)).collect::<Vec<_>>()
+		);
+	}
+
+	#[test]
+	fn test_rdelete_list() {
+		let mut one_root = Nodes::new();
+
+		/*
+
+		0
+			1
+				11
+					111
+				12
+					121
+			2
+				21
+			3
+
+		*/
+
+		// 0
+		one_root.add(LockedNode {
+			id: Uid::new(0),
+			parent_id: Uid::new(NO_PARENT_ID),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 1
+		one_root.add(LockedNode {
+			id: Uid::new(1),
+			parent_id: Uid::new(0),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 11
+		one_root.add(LockedNode {
+			id: Uid::new(11),
+			parent_id: Uid::new(1),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 111
+		one_root.add(LockedNode {
+			id: Uid::new(111),
+			parent_id: Uid::new(11),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 12
+		one_root.add(LockedNode {
+			id: Uid::new(12),
+			parent_id: Uid::new(1),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 121
+		one_root.add(LockedNode {
+			id: Uid::new(121),
+			parent_id: Uid::new(12),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 2, orphant
+		one_root.add(LockedNode {
+			id: Uid::new(2),
+			parent_id: Uid::new(0),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 21
+		one_root.add(LockedNode {
+			id: Uid::new(21),
+			parent_id: Uid::new(2),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+		// 3, orphant
+		one_root.add(LockedNode {
+			id: Uid::new(3),
+			parent_id: Uid::new(0),
+			content: stub_encrypted(),
+			dirty: false,
+		});
+
+		assert_eq!(
+			// specifying children won't do harm
+			one_root
+				.clone()
+				.delete_list(&[Uid::new(0), Uid::new(111), Uid::new(12), Uid::new(3)]),
+			[0, 1, 11, 111, 12, 121, 2, 21, 3]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
+
+		assert_eq!(
+			// non existing ids won't do harm either
+			one_root
+				.clone()
+				.delete_list(&[Uid::new(11), Uid::new(111), Uid::new(999)]),
+			[11, 111]
+				.into_iter()
+				.map(|idx| Uid::new(idx))
+				.collect::<Vec<_>>()
+		);
 	}
 }

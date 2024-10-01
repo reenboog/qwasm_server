@@ -19,12 +19,7 @@ mod webauthn;
 mod x448;
 
 use crate::purge::Purge;
-use aws_sdk_s3::{
-	config::{BehaviorVersion, Credentials, Region},
-	presigning::PresigningConfig,
-	types::{CompletedMultipartUpload, CompletedPart},
-	Client, Config,
-};
+use aws_sdk_s3::{Client, Config};
 use axum::{
 	extract::{self, Path},
 	http::StatusCode,
@@ -37,7 +32,7 @@ use axum_server::{tls_rustls::RustlsConfig, Server};
 use id::Uid;
 use nodes::LockedNode;
 use nodes::Nodes;
-use s3::Uploads;
+use s3::{s3_config, s3_delete_uploads, s3_finish_upload, s3_get_upload_status, Uploads};
 use sessions::Sessions;
 use shares::{Invite, InviteIntent, Shares, Welcome};
 use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -182,58 +177,9 @@ async fn get_upload_status(
 		.ok_or(Error::NotFound(file_id))?
 		.clone();
 	let client = &state.s3_client.lock().await;
-	let status = if upload.complete {
-		let presigning_config = PresigningConfig::builder()
-			.expires_in(std::time::Duration::from_secs(10 * 60))
-			.build()
-			.map_err(|e| Error::Io(e.to_string()))?;
-		let res = client
-			.get_object()
-			.bucket(state.s3_bucket.clone())
-			.key(file_id.to_base64())
-			.presigned(presigning_config)
-			.await
-			.map_err(|e| Error::Io(e.to_string()))?;
-		let content_length = client
-			.head_object()
-			.bucket(state.s3_bucket)
-			.key(file_id.to_base64())
-			.send()
-			.await
-			.map_err(|e| Error::Io(e.to_string()))?
-			.content_length()
-			.unwrap_or(0);
-
-		println!(
-			"upload complete, url: {}, content_length: {}",
-			res.uri().to_string(),
-			content_length
-		);
-
-		s3::UploadStatus::Ready {
-			url: res.uri().to_string(),
-			content_length,
-		}
-	} else {
-		let parts = client
-			.list_parts()
-			.bucket(state.s3_bucket)
-			.key(file_id.to_base64())
-			.upload_id(upload.upload_id.clone())
-			.send()
-			.await
-			.map_err(|e| Error::Io(e.to_string()))?;
-
-		println!("upload incomplete, parts: {:?}", parts);
-
-		s3::UploadStatus::Pending {
-			parts: parts
-				.parts()
-				.into_iter()
-				.map(|p| p.clone().into())
-				.collect(),
-		}
-	};
+	let status = s3_get_upload_status(client, &state.s3_bucket, &file_id, &upload)
+		.await
+		.map_err(|e| Error::Io(e.to_string()))?;
 
 	let info = s3::UploadInfo {
 		status,
@@ -255,11 +201,10 @@ async fn start_upload(
 		req.file_size
 	);
 
-	let file_name = file_id.to_base64();
 	let bucket = state.s3_bucket;
 	let plan = s3::partition_file(req.file_size);
 	let client = &state.s3_client.lock().await;
-	let upload_id = s3::s3_gen_upload_id(client, &bucket, &file_name)
+	let upload_id = s3::s3_gen_upload_id(client, &bucket, &file_id)
 		.await
 		.map_err(|e| {
 			println!("error generating upload id: {}", e.to_string());
@@ -270,7 +215,7 @@ async fn start_upload(
 	println!("partitions plan: {:?}", plan);
 
 	let presigned_urls =
-		s3::s3_gen_presigned_urls(client, &bucket, &file_name, &upload_id, plan.num_chunks)
+		s3::s3_gen_presigned_urls(client, &bucket, &file_id, &upload_id, plan.num_chunks)
 			.await
 			.map_err(|e| Error::Io(e.to_string()))?;
 
@@ -297,34 +242,23 @@ async fn finish_upload(
 	Path(file_id): Path<Uid>,
 	extract::Json(payload): extract::Json<s3::FinishUpload>,
 ) -> Result<StatusCode, Error> {
-	let file_name = file_id.to_base64();
-	let client = &state.s3_client.lock().await;
-	let bucket = &state.s3_bucket;
-	let mut parts: Vec<CompletedPart> = payload.parts.into_iter().map(|p| p.into()).collect();
-	parts.sort_by_key(|part| part.part_number);
-
-	let completed_upload = CompletedMultipartUpload::builder()
-		.set_parts(Some(parts))
-		.build();
-
 	println!(
 		"completing upload: {}; upload_id: {}",
 		file_id.to_base64(),
 		payload.upload_id
 	);
 
-	client
-		.complete_multipart_upload()
-		.bucket(bucket)
-		.key(&file_name)
-		.upload_id(&payload.upload_id)
-		.multipart_upload(completed_upload)
-		.send()
-		.await
-		.map_err(|e| {
-			println!("error completing upload: {}", e.to_string());
-			Error::Io(e.to_string())
-		})?;
+	let client = &state.s3_client.lock().await;
+
+	s3_finish_upload(
+		client,
+		&state.s3_bucket,
+		&file_id,
+		&payload.upload_id,
+		payload.parts,
+	)
+	.await
+	.map_err(|e| Error::Io(e.to_string()))?;
 
 	state.uploads.lock().await.mark_as_complete(file_id);
 
@@ -581,21 +515,31 @@ async fn unlock_session(
 	}
 }
 
-async fn delete_node(
+// acl should be considered obviously, but this demo doesn't need any
+async fn delete_nodes(
 	extract::State(state): extract::State<State>,
-	Path(file_id): Path<Uid>,
-) -> Result<StatusCode, Error> {
-	if let Some(_) = state.nodes.lock().await.remove(file_id) {
-		remove_file(file_id).await;
+	extract::Json(file_ids): extract::Json<Vec<Uid>>,
+) -> Result<(StatusCode, Json<Vec<Uid>>), Error> {
+	println!("deleting: {:?}", file_ids);
 
-		println!("deleted {}", file_id.to_base64());
+	// get a list of all deleted nodes (specified ids and their direct and indirect children)
+	let deleted_nodes = state.nodes.lock().await.delete_list(&file_ids);
+	// of the removed ids, get those of uploads
+	let removed_files = state.uploads.lock().await.remove(&deleted_nodes);
 
-		Ok(StatusCode::NO_CONTENT)
-	} else {
-		println!("can not delete {}; not found", file_id.to_base64());
+	println!(
+		"deleted: {:?}, removed files: {:?}",
+		deleted_nodes, removed_files
+	);
 
-		Err(Error::NotFound(file_id))
-	}
+	let client = &state.s3_client.lock().await;
+	s3_delete_uploads(client, &state.s3_bucket, &removed_files)
+		.await
+		.map_err(|e| Error::Io(e.to_string()))?;
+
+	println!("s3 somehow finished");
+
+	Ok((StatusCode::OK, Json(deleted_nodes)))
 }
 
 async fn get_all(
@@ -612,8 +556,6 @@ async fn purge(extract::State(mut state): extract::State<State>) -> Result<Statu
 	println!("purgin...");
 
 	state.purge().await;
-
-	clear_uploads_dir().await;
 
 	Ok(StatusCode::OK)
 }
@@ -714,25 +656,8 @@ async fn delete_passkey(
 	Ok(StatusCode::OK)
 }
 
-async fn clear_uploads_dir() {
-	_ = tokio::fs::remove_dir_all("uploads").await;
-	_ = tokio::fs::create_dir("uploads").await;
-}
-
-async fn remove_file(id: Uid) {
-	let path = path_for_file_id(id);
-
-	_ = tokio::fs::remove_file(path).await;
-}
-
-fn path_for_file_id(id: Uid) -> String {
-	format!("./uploads/{}", id.to_base64())
-}
-
 #[tokio::main]
 async fn main() {
-	clear_uploads_dir().await;
-
 	let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
 	let use_tls = env::var("USE_TLS").unwrap_or_else(|_| "false".into()) == "true";
 	let s3_ak_id = env::var("S3_AK_ID").expect("S3_AK_ID not set");
@@ -777,15 +702,6 @@ async fn main() {
 	}
 }
 
-fn s3_config(ak_id: &str, ak_secret: &str, region: &str, accelerate: bool) -> Config {
-	Config::builder()
-		.region(Region::new(region.to_string()))
-		.accelerate(accelerate)
-		.credentials_provider(Credentials::new(ak_id, ak_secret, None, None, "static"))
-		.behavior_version(BehaviorVersion::latest())
-		.build()
-}
-
 #[allow(dead_code)]
 fn router(state: State) -> Router {
 	Router::new()
@@ -793,7 +709,7 @@ fn router(state: State) -> Router {
 		.route("/uploads/start/:file_id", post(start_upload))
 		.route("/uploads/finish/:file_id", post(finish_upload))
 		.route("/nodes", post(add_nodes))
-		.route("/nodes/:file_id", delete(delete_node))
+		.route("/nodes", delete(delete_nodes))
 		.route("/nodes", get(get_all))
 		.route("/purge", post(purge))
 		.route("/signup", post(signup))
