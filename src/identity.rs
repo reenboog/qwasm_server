@@ -13,7 +13,7 @@ pub struct Public {
 	pub id: Uid,
 	// can be used to encrypt messages to or verify signatures against
 	pub x448: x448::PublicKeyX448,
-	pub ed448: ed25519::PublicKeyEd25519,
+	pub ed25519: ed25519::PublicKeyEd25519,
 	pub kyber: kyber::PublicKeyKyber,
 }
 
@@ -31,7 +31,7 @@ pub struct Encrypted {
 
 impl Public {
 	pub fn id(&self) -> Uid {
-		// id::from_bytes(&[self.x448.as_bytes(), self.ed448.as_bytes().as_slice()].concat())
+		// id::from_bytes(&[self.x448.as_bytes(), self.ed25519.as_bytes().as_slice()].concat())
 		self.id
 	}
 }
