@@ -30,18 +30,15 @@ pub struct LockedUser {
 #[derive(Serialize, Deserialize)]
 pub struct Signup {
 	pub email: String,
-	pub pass: String,
 	pub user: LockedUser,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Login {
 	pub email: String,
-	pub pass: String,
 }
 
 pub struct Users {
-	// no pass is needed here, since it's just a playground
 	// { email, user_id }
 	pub credentials: HashMap<String, Uid>,
 	// { user_id, Public }

@@ -1,3 +1,4 @@
 /target
 /uploads
 Cargo.lock
+.DS_Store

@@ -320,7 +320,6 @@ async fn signup(
 
 	users.add_priv(user_id, user.encrypted_priv);
 	users.add_pub(user_id, user._pub);
-	// password should be hashed and stored as well, but no need for now
 	users.add_credentials(&signup.email, user_id);
 
 	println!("signed up {}", signup.email);
@@ -347,22 +346,22 @@ async fn login(
 
 async fn get_invite(
 	extract::State(state): extract::State<State>,
-	Path(email_base64): Path<String>,
+	Path(ref_src_base64): Path<String>,
 ) -> Result<(StatusCode, Json<Welcome>), Error> {
 	let shares = state.shares.lock().await;
 	let nodes = state.nodes.lock().await;
 
-	println!("getting invite: {}", email_base64);
+	println!("getting invite: {}", ref_src_base64);
 
-	let email = String::from_utf8(
-		base64::decode_config(&email_base64, base64::URL_SAFE)
-			.map_err(|_| Error::NoInvite(email_base64.clone()))?,
+	let ref_src = String::from_utf8(
+		base64::decode_config(&ref_src_base64, base64::URL_SAFE)
+			.map_err(|_| Error::NoInvite(ref_src_base64.clone()))?,
 	)
-	.map_err(|_| Error::NoInvite(email_base64.clone()))?;
+	.map_err(|_| Error::NoInvite(ref_src_base64.clone()))?;
 
-	println!("getting invite decoded: {}", email);
+	println!("getting invite decoded: {}", ref_src);
 
-	if let Some(invite) = shares.invie_for_mail(&email) {
+	if let Some(invite) = shares.invie_for_ref_src(&ref_src) {
 		let welcome = Welcome {
 			user_id: invite.user_id,
 			sender: invite.sender.clone(),
@@ -375,7 +374,7 @@ async fn get_invite(
 		// TODO: do I need thi sstatus code?
 		Ok((StatusCode::OK, Json(welcome)))
 	} else {
-		Err(Error::NoInvite(email_base64))
+		Err(Error::NoInvite(ref_src_base64))
 	}
 }
 
@@ -412,9 +411,9 @@ async fn invite(
 	extract::Json(invite): extract::Json<Invite>,
 ) -> Result<StatusCode, Error> {
 	let mut shares = state.shares.lock().await;
-	let email = invite.email.clone();
+	let ref_src = invite.ref_src.clone();
 
-	println!("inviting: {}", email);
+	println!("inviting: {}", ref_src);
 
 	shares.add_invite(invite);
 
@@ -426,9 +425,9 @@ async fn start_invite_intent(
 	extract::Json(intent): extract::Json<InviteIntent>,
 ) -> Result<StatusCode, Error> {
 	let mut shares = state.shares.lock().await;
-	let email = intent.email.clone();
+	let ref_src = intent.ref_src.clone();
 
-	println!("start invite intent: {}", email);
+	println!("start invite intent: {}", ref_src);
 
 	shares.add_invite_intent(intent);
 
@@ -439,24 +438,24 @@ async fn start_invite_intent(
 
 async fn get_invite_intent(
 	extract::State(state): extract::State<State>,
-	Path(email_base64): Path<String>,
+	Path(ref_src_base64): Path<String>,
 ) -> Result<(StatusCode, Json<InviteIntent>), Error> {
-	let email = String::from_utf8(
-		base64::decode_config(&email_base64, base64::URL_SAFE)
-			.map_err(|_| Error::NoInvite(email_base64.clone()))?,
+	let ref_src = String::from_utf8(
+		base64::decode_config(&ref_src_base64, base64::URL_SAFE)
+			.map_err(|_| Error::NoInvite(ref_src_base64.clone()))?,
 	)
-	.map_err(|_| Error::NoInvite(email_base64.clone()))?;
+	.map_err(|_| Error::NoInvite(ref_src_base64.clone()))?;
 
 	//
 	let shares = state.shares.lock().await;
-	println!("getting intent for: {}", email);
+	println!("getting intent for: {}", ref_src);
 
-	if let Some(intent) = shares.get_invite_intent(&email) {
-		println!("--intent for: {}; res: {:?}", email, intent,);
+	if let Some(intent) = shares.get_invite_intent(&ref_src) {
+		println!("--intent for: {}; res: {:?}", ref_src, intent,);
 
 		Ok((StatusCode::OK, Json(intent.clone())))
 	} else {
-		Err(Error::NoInvite(email.to_string()))
+		Err(Error::NoInvite(ref_src.to_string()))
 	}
 }
 
@@ -471,12 +470,12 @@ async fn finish_invite_intents_if_any(
 	intents.iter().for_each(|int| {
 		shares.add_share(int.share.clone());
 
-		let email = &int.email;
+		let ref_src = &int.ref_src;
 
 		println!(
 			"--intent: {}; res: {:?}",
-			email,
-			shares.delete_invite_intent(email)
+			ref_src,
+			shares.delete_invite_intent(ref_src)
 		);
 	});
 
@@ -726,11 +725,11 @@ fn router(state: State) -> Router {
 			delete(delete_passkey),
 		)
 		.route("/login", post(login))
-		.route("/invite/pinned/:email", get(get_invite))
+		.route("/invite/pinned/:ref_src", get(get_invite))
 		.route("/invite/pinned", post(invite))
 		// TODO: an api for share?
 		.route("/invite/intent/start", post(start_invite_intent))
-		.route("/invite/intent/fetch/:email", get(get_invite_intent))
+		.route("/invite/intent/fetch/:ref_src", get(get_invite_intent))
 		.route("/invite/intent/finish/", post(finish_invite_intents_if_any))
 		.route("/webauthn/start-reg/:user_id", post(webauthn_start_reg))
 		.route("/webauthn/finish-reg/:user_id", post(webauthn_finish_reg))

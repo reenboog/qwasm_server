@@ -47,7 +47,7 @@ pub struct LockedShare {
 pub struct Invite {
 	pub(crate) user_id: Uid,
 	pub(crate) sender: identity::Public,
-	pub(crate) email: String,
+	pub(crate) ref_src: String,
 	pub(crate) payload: lock::Lock,
 	pub(crate) export: Export,
 	pub(crate) sig: ed25519::Signature,
@@ -62,9 +62,9 @@ pub enum Index {
 // a pin-less invite intent that should be later acknowledged
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct InviteIntent {
-	pub(crate) email: String,
+	pub(crate) ref_src: String,
 	pub(crate) sender: identity::Public,
-	// sign(email + user_id + sender.id)
+	// sign(ref_src + user_id + sender.id)
 	pub(crate) sig: ed25519::Signature,
 	pub(crate) user_id: Uid,
 	// receiver's pk which the sender is to use to finally encrypt the previously selected seeds
@@ -77,7 +77,7 @@ pub struct InviteIntent {
 
 #[derive(Serialize, Deserialize)]
 pub struct FinishInviteIntent {
-	pub(crate) email: String,
+	pub(crate) ref_src: String,
 	pub(crate) share: LockedShare,
 }
 
@@ -112,15 +112,15 @@ impl Shares {
 	}
 
 	pub fn add_invite(&mut self, invite: Invite) {
-		self.invites.insert(invite.email.to_string(), invite);
+		self.invites.insert(invite.ref_src.to_string(), invite);
 	}
 
 	pub fn add_invite_intent(&mut self, intent: InviteIntent) {
-		self.intents.insert(intent.email.to_string(), intent);
+		self.intents.insert(intent.ref_src.to_string(), intent);
 	}
 
-	pub fn get_invite_intent(&self, email: &str) -> Option<&InviteIntent> {
-		self.intents.get(email)
+	pub fn get_invite_intent(&self, ref_src: &str) -> Option<&InviteIntent> {
+		self.intents.get(ref_src)
 	}
 
 	pub fn get_invite_intents_for_sender(&self, sender: Uid) -> Vec<InviteIntent> {
@@ -131,12 +131,12 @@ impl Shares {
 			.collect()
 	}
 
-	pub fn delete_invite_intent(&mut self, email: &str) -> Option<InviteIntent> {
-		self.intents.remove(email)
+	pub fn delete_invite_intent(&mut self, ref_src: &str) -> Option<InviteIntent> {
+		self.intents.remove(ref_src)
 	}
 
-	pub fn ack_invite_intent(&mut self, email: &str, pk: identity::Public) -> bool {
-		if let Some(intent) = self.intents.get_mut(email) {
+	pub fn ack_invite_intent(&mut self, ref_src: &str, pk: identity::Public) -> bool {
+		if let Some(intent) = self.intents.get_mut(ref_src) {
 			if intent.receiver.is_none() {
 				// no need to ack more than once
 				intent.receiver = Some(pk);
@@ -149,12 +149,12 @@ impl Shares {
 		}
 	}
 
-	pub fn invie_for_mail(&self, email: &str) -> Option<&Invite> {
-		self.invites.get(email)
+	pub fn invie_for_ref_src(&self, ref_src: &str) -> Option<&Invite> {
+		self.invites.get(ref_src)
 	}
 
-	pub fn delete_invite(&mut self, email: &str) {
-		self.invites.remove(email);
+	pub fn delete_invite(&mut self, ref_src: &str) {
+		self.invites.remove(ref_src);
 	}
 }
 
