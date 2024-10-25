@@ -43,6 +43,7 @@ use webauthn::Webauthn;
 
 #[derive(Debug)]
 enum Error {
+	BadJson,
 	Io(String),
 	Unauthorised,
 	NotFound(Uid),
@@ -70,6 +71,7 @@ impl From<axum::Error> for Error {
 impl IntoResponse for Error {
 	fn into_response(self) -> Response {
 		match self {
+			Error::BadJson => StatusCode::BAD_REQUEST,
 			Error::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
 			Error::Unauthorised => StatusCode::FORBIDDEN,
 			Error::NotFound(_) => StatusCode::NOT_FOUND,
@@ -148,7 +150,7 @@ impl State {
 
 		println!("getting user by id: {:?}", id);
 
-		let _priv = users.priv_for_id(id).ok_or(Error::Unauthorised)?;
+		let _priv = users.priv_for_id(id);
 		let _pub = users.pub_for_id(id).ok_or(Error::Unauthorised)?;
 		let invite_intents = shares.get_invite_intents_for_sender(id);
 		let shares = shares.all_shares_for_user(id);
@@ -156,7 +158,7 @@ impl State {
 		let roots = nodes.get_all();
 
 		Ok(LockedUser {
-			encrypted_priv: _priv.clone(),
+			encrypted_priv: _priv.cloned(),
 			_pub: _pub.clone(),
 			shares,
 			roots,
@@ -303,6 +305,8 @@ async fn signup(
 	let user = signup.user;
 	let user_id = user._pub.id();
 
+	let _priv = user.encrypted_priv.ok_or(Error::BadJson)?;
+
 	println!(
 		"ack invite intent for: {}; res: {}",
 		signup.email,
@@ -318,7 +322,7 @@ async fn signup(
 	});
 	shares.delete_invite(&signup.email);
 
-	users.add_priv(user_id, user.encrypted_priv);
+	users.add_priv(user_id, _priv);
 	users.add_pub(user_id, user._pub);
 	users.add_credentials(&signup.email, user_id);
 

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub struct LockedUser {
 	// password-encrypted identity::Private
 	// aes_encrypted?
-	pub encrypted_priv: lock::Lock,
+	pub encrypted_priv: Option<lock::Lock>,
 	#[serde(rename = "pub")]
 	pub _pub: identity::Public,
 	// exports & imports will be decoded from this; god has empty imports, always
